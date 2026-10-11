@@ -2,8 +2,8 @@
   const PINKS = { sakura: ['樱粉', '#E46F9C'], rouge: ['胭脂粉', '#D9527F'], deep: ['深樱', '#C93A72'], rose: ['玫粉', '#B92E62'] };
   const LIGHTS = { blush: ['浅粉', '#FAD6E2'], petal: ['花瓣粉', '#F7C6D6'], white: ['白', '#F5F2EF'] };
   const COLORS = { brown: '#6E4A34' };
-  const FIXED = { maxLedge: 1 };
-  const state = { text: '', ecc: 'Q', upper: true, mask: -1, onCanopy: true, dome: 6, module: 4, trunk: 9, crown: 1, squash: 0.7, lobes: 4, puff: 0.85, rough: 1, ledge: '1', wood: 'brown', pink: 'rouge', light: 'blush', view: 'orbit', dist: 60, off: 0, seedAdd: 0 };
+  const FIXED = { maxLedge: 2 };
+  const state = { text: '', ecc: 'Q', upper: true, mask: -1, onCanopy: true, dome: 6, module: 4, trunk: 9, crown: 1, squash: 0.7, lobes: 4, puff: 0.85, rough: 1, ledge: '2', wood: 'brown', pink: 'rouge', light: 'blush', view: 'orbit', dist: 60, off: 0, seedAdd: 0 };
   const $ = id => document.getElementById(id);
   let T = null, renderer, scanRenderer, scene, group, dirLight, orbitCam, topCam, phoneCam, model = null, needsRender = true;
   let blockMesh = null, blockMat = null, geomTags = null;
@@ -134,14 +134,6 @@
         if (filled(cb.c + F.n[0], cb.r + F.n[2], cb.k + F.n[1])) continue;
         const quad = F.q.map(([x, y, z]) => [off + (cb.c + x) * s, (cb.k + y) * s, off + (cb.r + z) * s]);
         for (const p of [quad[0], quad[1], quad[2], quad[0], quad[2], quad[3]]) { pos.push(p[0], p[1], p[2]); nor.push(F.n[0], F.n[1], F.n[2]); col.push(1, 1, 1); tags.push(tagv); }
-      }
-    }
-    // 45° chamfers under the ledges, as they will be printed
-    for (const w of m.chamfers) {
-      const tagv = w.color === 'dark' ? 1 : w.color === 'wood' ? 11 : 21;
-      for (const f of SakuraExport.pieceFaces(w)) {
-        const len = Math.hypot(f.n[0], f.n[1], f.n[2]), p = f.p.map(([c, r, k]) => [off + (w.c + c) * s, (w.k + k) * s, off + (w.r + r) * s]);
-        for (let i = 2; i < p.length; i++) for (const q of [p[0], p[i - 1], p[i]]) { pos.push(q[0], q[1], q[2]); nor.push(f.n[0] / len, f.n[2] / len, f.n[1] / len); col.push(1, 1, 1); tags.push(tagv); }
       }
     }
     const g = new T.BufferGeometry();
@@ -312,13 +304,12 @@
     const s = S(), threeCol = state.wood === 'brown';
     const swaps = Math.round(model.mixedLevels * s / 0.2);
     const used = [[PINKS[state.pink][0], PINKS[state.pink][1]], [LIGHTS[state.light][0], LIGHTS[state.light][1]]].concat(threeCol ? [['棕', COLORS.brown]] : []);
-    const nCh = model.chamfers.length;
-    const ledgeText = model.ledges ? '另有 ' + model.ledges + ' 处平着悬空的方块（最多 ' + model.maxH * s + ' mm），需支撑' : '没有平着悬空的面，免支撑';
+    const ledgeText = { 1: '全部 45° 台阶，免支撑', 2: '最多悬挑 2 格（' + (2 * s) + ' mm）', 3: '最多悬挑 3 格（' + (3 * s) + ' mm），需支撑' }[model.maxH];
     const cells = [
       ['<span class="mono">' + W().toFixed(0) + ' × ' + W().toFixed(0) + ' × ' + H().toFixed(0) + '</span>', '成品尺寸 mm'],
       ['<span class="palette">' + used.map(c => '<i style="background:' + c[1] + '" title="' + c[0] + '"></i>').join('') + '&nbsp;' + used.length + ' 色</span>', used.map(c => c[0]).join(' · ')],
       [model.onCanopy + ' / ' + (model.n * model.n), '码点落在树冠顶上 / 全部码点' + (model.onCanopy === model.n * model.n ? '' : '（其余印在底座上）')],
-      [nCh + ' 处', '45° 倒角 · ' + ledgeText + '（削掉 ' + model.trimmed + ' 块挂不住的花，补 ' + model.added + ' 块托住码点）'],
+      [model.trimmed + ' 块', '为免支撑削掉的悬空花块 · ' + ledgeText],
       ['~' + swaps + ' 次', '换色次数（0.2 mm 层高，单喷头）'],
       ['~' + Math.round(swaps * 0.3) + ' g · ' + (swaps * 50 / 3600).toFixed(1) + ' h', 'AMS 冲刷废料与额外耗时（粗估）；双喷头约为 0']
     ];
@@ -332,7 +323,7 @@
     state.encoded = prep.text;
     $('upperNote').textContent = prep.note;
     $('rowDome').hidden = !state.onCanopy;
-    $('ledgeNote').textContent = { '1': '每级最多往外悬出 1 格，底下补 45° 倒角，不需要支撑。', '2': '树冠底面更圆，但有 8 mm 平着悬空的台阶，需要开启支撑。', '3': '树冠底面最圆，但有 12 mm 平着悬空的台阶，需要开启支撑。' }[state.ledge];
+    $('ledgeNote').textContent = { '1': '树冠底部按 45° 台阶收进去，完全不需要支撑，树冠底面会尖一些。', '2': '每级台阶最多往外伸 2 格。树冠更圆，大多数打印机能直接打，边缘可能轻微下垂。', '3': '树冠底面最圆，但 3 格悬挑需要开启支撑。' }[state.ledge];
     const err = $('err');
     if (!state.text) { err.textContent = '先输入一些文字。'; err.hidden = false; return; }
     let mi;
