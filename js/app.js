@@ -2,7 +2,8 @@
   const PINKS = { sakura: ['樱粉', '#E46F9C'], rouge: ['胭脂粉', '#D9527F'], deep: ['深樱', '#C93A72'], rose: ['玫粉', '#B92E62'] };
   const LIGHTS = { blush: ['浅粉', '#FAD6E2'], petal: ['花瓣粉', '#F7C6D6'], white: ['白', '#F5F2EF'] };
   const COLORS = { brown: '#6E4A34' };
-    const state = { text: '', ecc: 'Q', upper: true, mask: -1, module: 4, trunk: 9, crown: 1, squash: 0.7, lobes: 4, puff: 0.85, rough: 1, clear: 0.2, wood: 'brown', pink: 'rouge', light: 'blush', view: 'orbit', dist: 60, off: 0, seedAdd: 0 };
+  const FIXED = { maxLedge: 2 };
+  const state = { text: '', ecc: 'Q', upper: true, mask: -1, onCanopy: true, dome: 6, module: 4, trunk: 9, crown: 1, squash: 0.7, lobes: 4, puff: 0.85, rough: 1, ledge: '2', wood: 'brown', pink: 'rouge', light: 'blush', view: 'orbit', dist: 60, off: 0, seedAdd: 0 };
   const $ = id => document.getElementById(id);
   let T = null, renderer, scanRenderer, scene, group, dirLight, orbitCam, topCam, phoneCam, model = null, needsRender = true;
   let blockMesh = null, blockMat = null, geomTags = null;
@@ -37,7 +38,7 @@
     upd();
     el.addEventListener('input', () => { upd(); full ? schedule() : scheduleScan(true); });
   }
-  bindSeg('ecc', 'ecc'); bindSeg('wood', 'wood', () => applyColors());
+  bindSeg('ecc', 'ecc'); bindSeg('ledge', 'ledge'); bindSeg('wood', 'wood', () => applyColors());
   bindRange('module', 'module', v => v + ' mm');
   bindRange('trunk', 'trunk', v => v + ' 格');
   bindRange('crown', 'crown', v => Math.round(v * 100) + '%');
@@ -45,11 +46,12 @@
   bindRange('lobes', 'lobes', v => String(v));
   bindRange('rough', 'rough', v => v.toFixed(2));
   bindRange('puff', 'puff', v => v.toFixed(2));
+  bindRange('dome', 'dome', v => v + ' 格');
   bindRange('mask', 'mask', v => v < 0 ? '自动' : '第 ' + v + ' 号');
   $('upper').addEventListener('change', e => { state.upper = e.target.checked; schedule(); });
+  $('oncanopy').addEventListener('change', e => { state.onCanopy = e.target.checked; schedule(); });
   bindRange('dist', 'dist', v => v + ' cm', false);
   bindRange('off', 'off', v => v + ' mm', false);
-  bindRange('clear', 'clear', v => v.toFixed(2) + ' mm', false);
   $('reseed').addEventListener('click', () => { state.seedAdd++; schedule(); });
   $('txt').addEventListener('input', schedule);
   $('panel').addEventListener('submit', e => e.preventDefault());
@@ -132,14 +134,6 @@
         if (filled(cb.c + F.n[0], cb.r + F.n[2], cb.k + F.n[1])) continue;
         const quad = F.q.map(([x, y, z]) => [off + (cb.c + x) * s, (cb.k + y) * s, off + (cb.r + z) * s]);
         for (const p of [quad[0], quad[1], quad[2], quad[0], quad[2], quad[3]]) { pos.push(p[0], p[1], p[2]); nor.push(F.n[0], F.n[1], F.n[2]); col.push(1, 1, 1); tags.push(tagv); }
-      }
-    }
-    // 45° chamfers on the inner limb steps (they hang above the step; printed upside down they hold it up)
-    for (const w of m.chamfers) {
-      const tagv = w.color === 'dark' ? 1 : w.color === 'wood' ? 10 + jit(w.c, w.r, w.k - 1) * 0.05 + 1 : 21;
-      for (const f of SakuraExport.pieceFaces(w)) {
-        const len = Math.hypot(f.n[0], f.n[1], f.n[2]), p = f.p.map(([c, r, z]) => [off + (w.c + c) * s, (w.k + 1 - z) * s, off + (w.r + r) * s]);
-        for (let i = 2; i < p.length; i++) for (const q of [p[0], p[i - 1], p[i]]) { pos.push(q[0], q[1], q[2]); nor.push(f.n[0] / len, -f.n[2] / len, f.n[1] / len); col.push(1, 1, 1); tags.push(tagv); }
       }
     }
     const g = new T.BufferGeometry();
@@ -256,16 +250,11 @@
   // ---------- scanning ----------
   const work = document.createElement('canvas'); work.width = work.height = 480;
   const wctx = work.getContext('2d', { willReadFrequently: true });
-  // like a phone that decodes many frames, try the frame and a 3/4-size copy (jsQR can trip over pixel aliasing)
   function decodeWith(cam) {
     scanRenderer.render(scene, cam);
-    for (const size of [480, 360]) {
-      wctx.drawImage(scanRenderer.domElement, 0, 0, size, size);
-      const found = jsQR(wctx.getImageData(0, 0, size, size).data, size, size, { inversionAttempts: 'dontInvert' });
-      if (found) { wctx.drawImage(scanRenderer.domElement, 0, 0); return found; }
-    }
     wctx.drawImage(scanRenderer.domElement, 0, 0);
-    return null;
+    const img = wctx.getImageData(0, 0, 480, 480);
+    return jsQR(img.data, 480, 480, { inversionAttempts: 'dontInvert' });
   }
   // worst misregistration (in modules) between each visible blossom and its own code cell, seen from the phone
   function misregistration() {
@@ -295,10 +284,11 @@
     setChip('chipPhone', ok2 ? 'ok' : 'bad', '手机 ' + (state.dist / 100).toFixed(1) + ' m ' + (ok2 ? '可识别' : '失败'));
     const mis = misregistration();
     setChip('chipPara', mis < 0.3 ? 'ok' : mis < 0.5 ? 'warn' : 'bad', '错位 ' + mis.toFixed(2) + ' 格');
+    const span = ((model.topMax - model.topMin) * S() / 10).toFixed(1);
     let msg;
     if (ok2) msg = '解码结果：<span class="mono">' + escapeHTML(r2.data) + '</span>';
     else if (!ok1) msg = '连正俯视都扫不出，多半是花色和白色太接近。换深一点的花色试试。';
-    else if (mis >= 0.3) msg = '手机离得太近，透视让码点错开约 ' + mis.toFixed(1) + ' 格。把手机拉高一些。';
+    else if (mis >= 0.3) msg = '码点之间最大高差约 ' + span + ' cm，手机离得近时高处的码点被透视放大，错开约 ' + mis.toFixed(1) + ' 格。把手机拉高；或打开“整个码放在树冠顶上”，减小顶面拱起。';
     else msg = '几何上已基本对齐，失败多半来自偏离中心或颜色对比。把偏移调回 0，或换深一点的花色。';
     $('scanMsg').innerHTML = msg;
   }
@@ -314,16 +304,17 @@
     const s = S(), threeCol = state.wood === 'brown';
     const swaps = Math.round(model.mixedLevels * s / 0.2);
     const used = [[PINKS[state.pink][0], PINKS[state.pink][1]], [LIGHTS[state.light][0], LIGHTS[state.light][1]]].concat(threeCol ? [['棕', COLORS.brown]] : []);
+    const ledgeText = { 1: '全部 45° 台阶，免支撑', 2: '最多悬挑 2 格（' + (2 * s) + ' mm）', 3: '最多悬挑 3 格（' + (3 * s) + ' mm），需支撑' }[model.maxH];
     const cells = [
-      ['<span class="mono">' + W().toFixed(0) + ' × ' + W().toFixed(0) + ' × ' + ((model.F + 2) * s).toFixed(0) + '</span>', '成品尺寸 mm（插上 ' + (2 * s) + ' mm 底座）'],
+      ['<span class="mono">' + W().toFixed(0) + ' × ' + W().toFixed(0) + ' × ' + H().toFixed(0) + '</span>', '成品尺寸 mm'],
       ['<span class="palette">' + used.map(c => '<i style="background:' + c[1] + '" title="' + c[0] + '"></i>').join('') + '&nbsp;' + used.length + ' 色</span>', used.map(c => c[0]).join(' · ')],
-      [model.onCanopy + ' / ' + (model.n * model.n), '码点在平整的顶面上 / 全部码点'],
-      ['倒置 · 免支撑', '码面贴平台，' + model.chamfers.length + ' 处 45° 倒角；底座单独打，插口每边留 ' + state.clear.toFixed(2) + ' mm'],
+      [model.onCanopy + ' / ' + (model.n * model.n), '码点落在树冠顶上 / 全部码点' + (model.onCanopy === model.n * model.n ? '' : '（其余印在底座上）')],
+      [model.trimmed + ' 块', '为免支撑削掉的悬空花块 · ' + ledgeText],
       ['~' + swaps + ' 次', '换色次数（0.2 mm 层高，单喷头）'],
       ['~' + Math.round(swaps * 0.3) + ' g · ' + (swaps * 50 / 3600).toFixed(1) + ' h', 'AMS 冲刷废料与额外耗时（粗估）；双喷头约为 0']
     ];
     $('stats').innerHTML = cells.map(([v, l]) => '<div class="stat"><b>' + v + '</b><span>' + l + '</span></div>').join('');
-    $('exportInfo').textContent = '树 ' + W().toFixed(0) + ' × ' + W().toFixed(0) + ' × ' + ((model.F + 1) * s + 2 * s - 0.4).toFixed(1) + ' mm（含方榫，倒置），' + used.length + ' 个颜色部件；底座 ' + W().toFixed(0) + ' × ' + W().toFixed(0) + ' × ' + (2 * s) + ' mm。';
+    $('exportInfo').textContent = '当前模型 ' + W().toFixed(0) + ' × ' + W().toFixed(0) + ' × ' + H().toFixed(0) + ' mm，' + used.length + ' 个颜色部件。';
   }
   function rebuild() {
     if (!T) return;
@@ -331,6 +322,8 @@
     const prep = prepareText(state.text);
     state.encoded = prep.text;
     $('upperNote').textContent = prep.note;
+    $('rowDome').hidden = !state.onCanopy;
+    $('ledgeNote').textContent = { '1': '树冠底部按 45° 台阶收进去，完全不需要支撑，树冠底面会尖一些。', '2': '每级台阶最多往外伸 2 格。树冠更圆，大多数打印机能直接打，边缘可能轻微下垂。', '3': '树冠底面最圆，但 3 格悬挑需要开启支撑。' }[state.ledge];
     const err = $('err');
     if (!state.text) { err.textContent = '先输入一些文字。'; err.hidden = false; return; }
     let mi;
@@ -341,10 +334,11 @@
     $('verInfo').textContent = '版本 ' + mi.version + ' · ' + mi.n + '×' + mi.n + ' · ' + mi.mode;
     $('maskVal').textContent = (state.mask < 0 ? '自动 · ' : '') + '第 ' + mi.mask + ' 号';
 
-    model = buildCanopyTree(mi.mat, {
-      crown: state.crown * 1.45, squash: state.squash, trunk: state.trunk, lobes: state.lobes, rough: state.rough, puff: state.puff,
-      quiet: 5, seed: strSeed(state.encoded) + state.seedAdd * 7919
-    });
+    model = buildCanopyTree(mi.mat, Object.assign({}, FIXED, {
+      crown: state.onCanopy ? state.crown * 1.45 : state.crown, squash: state.squash, trunk: state.trunk, lobes: state.lobes, rough: state.rough, puff: state.puff,
+      quiet: state.onCanopy ? 5 : 3, onCanopy: state.onCanopy, dome: state.dome, capDepth: 4,
+      maxLedge: parseInt(state.ledge, 10), seed: strSeed(state.encoded) + state.seedAdd * 7919
+    }));
     while (group.children.length) { const c = group.children[0]; group.remove(c); if (c.geometry) c.geometry.dispose(); }
     blockMesh = new T.Mesh(buildBlocks(model), blockMat); blockMesh.castShadow = true; blockMesh.receiveShadow = true;
     group.add(blockMesh);
@@ -361,12 +355,11 @@
     return {
       dark: { name: '花 ' + PINKS[state.pink][0], hex: PINKS[state.pink][1] },
       light: { name: '高光 ' + LIGHTS[state.light][0], hex: LIGHTS[state.light][1] },
-      wood: { name: '树干 棕', hex: COLORS.brown },
-      base: { name: '底座 ' + LIGHTS[state.light][0], hex: LIGHTS[state.light][1] }
+      wood: { name: '树干 棕', hex: COLORS.brown }
     };
   }
   function exportParts() {
-    return SakuraExport.buildParts(model, S(), exportColours(), state.wood === 'brown' ? null : { wood: 'light' }, { clear: state.clear });
+    return SakuraExport.buildParts(model, S(), exportColours(), state.wood === 'brown' ? null : { wood: 'light' });
   }
   function baseName() {
     const host = (state.encoded || 'sakura').replace(/^[a-z][a-z0-9+.-]*:\/\//i, '').replace(/[^A-Za-z0-9._-]+/g, '-').replace(/^-+|-+$/g, '').toLowerCase();
