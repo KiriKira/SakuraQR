@@ -13,24 +13,30 @@ function noise3(x, y, z, seed) {
 }
 
 /*
- o = { quiet, crown: canopy radius / half code width, squash: vertical / horizontal canopy radius,
-       trunk: bare trunk height (cubes), lobes: number of side lobes, rough: 0..1 surface lumpiness,
-       maxLedge: 1..3 longest sideways overhang, seed }
+ The tree is printed upside down: the flat top face that carries the code lies on the print bed, the canopy hangs
+ from it and the trunk ends in a square peg that plugs into a separately printed base. Seen that way up, every cube
+ rests on the cube above it (in the tree's own orientation), except the inner step of each limb, which gets a 45°
+ chamfer (`chamfers`). Nothing needs supports.
+
+ o = { quiet, crown: canopy radius / half code width, squash: canopy thickness / canopy radius,
+       trunk: bare trunk height (cubes), lobes: number of outer clouds and limbs, puff: how round the clouds' rims are,
+       rough: 0..1 surface lumpiness, seed }
 */
 function buildCanopyTree(mat, o) {
   const n = mat.length, q = o.quiet, N = n + 2 * q, ctr = (N - 1) / 2;
   const rng = mulberry32(o.seed || 1), seed = o.seed || 1;
-  const R = o.crown * n / 2, A = R * o.squash, L = Math.max(1, Math.min(3, o.maxLedge || 2));
-  const kT = o.trunk, Kc = kT + A * 0.62;  // kT: where the trunk forks
-  const KMAX = Math.ceil(kT + A * 2.2) + 4;
+  const R = o.crown * n / 2, A = R * o.squash;
+  const kT = o.trunk;  // kT: where the trunk forks
+  const KMAX = Math.ceil(kT + R * 2.2 + A) + 4;
   const idx = (c, r, k) => (k * N + r) * N + c;
   const M = { EMPTY: 0, LEAF: 1, WOOD: 2 };
-  const vox = new Uint8Array(N * N * (KMAX + 1));
+  const vox = new Uint8Array(N * N * (KMAX + 2));
   const inGrid = (c, r) => c >= 0 && r >= 0 && c < N && r < N;
-  const dark = (c, r) => c >= q && r >= q && c < q + n && r < q + n && !!mat[r - q][c - q];
   const inCode = (c, r) => c >= q && r >= q && c < q + n && r < q + n;
+  const dark = (c, r) => inCode(c, r) && !!mat[r - q][c - q];
 
-  // ---- 1. skeleton: short 2x2 trunk that forks into a few limbs; a cloud of blossom at each limb tip ----
+  // ---- 1. layout: short 2x2 trunk with a few roots; clouds of blossom over the code's corners, an inner tier
+  //      between them and a crown cloud in the middle ----
   const tc = Math.round(ctr), tr = Math.round(ctr);
   const trunkCells = [[tc, tr], [tc + 1, tr], [tc, tr + 1], [tc + 1, tr + 1]];
   for (const [c, r] of trunkCells) for (let k = 1; k <= kT; k++) vox[idx(c, r, k)] = M.WOOD;
@@ -38,128 +44,106 @@ function buildCanopyTree(mat, o) {
     const c2 = c + dc, r2 = r + dr;
     if (inGrid(c2, r2) && !vox[idx(c2, r2, 1)] && rng() < 0.4) vox[idx(c2, r2, 1)] = M.WOOD;
   }
-  const nl = o.lobes, rot = o.onCanopy ? Math.PI / 4 + (rng() - 0.5) * 0.3 : rng() * Math.PI * 2;
+  const nl = o.lobes, rot = Math.PI / 4 + (rng() - 0.5) * 0.3;
   const clumps = [];
-  let limbCubes = 0;
-  const putWood = (c, r, k) => { if (inGrid(c, r) && k >= 1 && k <= KMAX && vox[idx(c, r, k)] !== M.WOOD) { vox[idx(c, r, k)] = M.WOOD; limbCubes++; } };
-  // limb: from the trunk top, climb outward as a staircase (L sideways per level), 2 cubes thick near the base
-  function limb(c0, r0, k0, tx, ty, tz, thick) {
-    let c = c0, r = r0, k = k0, steps = 0;
-    while ((c !== tx || r !== ty || k < tz) && steps++ < 200) {
-      for (let s = 0; s < L && (c !== tx || r !== ty); s++) {
-        const dx = tx - c, dy = ty - r;
-        if (Math.abs(dx) >= Math.abs(dy)) c += Math.sign(dx); else r += Math.sign(dy);
-        putWood(c, r, k); if (thick) putWood(c, r, k - 1);
-      }
-      if (k < tz || (c === tx && r === ty)) { k++; putWood(c, r, k); }
-      if (c === tx && r === ty && k >= tz) break;
-    }
-    return [c, r, k];
+  for (let i = 0; i < nl; i++) {   // the outer clouds, each with a limb of its own
+    const th = rot + i * 2 * Math.PI / nl + (rng() - 0.5) * 0.5, d = R * (0.5 + rng() * 0.18);
+    clumps.push({ x: Math.round(ctr + d * Math.cos(th)), y: Math.round(ctr + d * Math.sin(th)), rx: R * (0.36 + rng() * 0.1), th, limb: true });
   }
-  for (let i = 0; i < nl; i++) {
-    const th = rot + i * 2 * Math.PI / nl + (rng() - 0.5) * 0.5;
-    const d = R * (0.5 + rng() * 0.18);
-    const tx = Math.round(ctr + d * Math.cos(th)), ty = Math.round(ctr + d * Math.sin(th));
-    const tz = Math.round(kT + A * (0.25 + rng() * 0.3));
-    const startC = tc + (Math.cos(th) > 0 ? 1 : 0), startR = tr + (Math.sin(th) > 0 ? 1 : 0);
-    const tip = limb(startC, startR, kT, tx, ty, tz, true);
-    const rx = R * (0.36 + rng() * 0.1);
-    clumps.push({ x: tip[0], y: tip[1], z: tip[2] + rx * 0.45, rx, rz: rx * o.puff, th });
+  for (const lo of clumps.slice()) {
+    const th = lo.th + Math.PI / nl, d = R * (0.28 + rng() * 0.1);
+    clumps.push({ x: Math.round(ctr + d * Math.cos(th)), y: Math.round(ctr + d * Math.sin(th)), rx: R * (0.3 + rng() * 0.06) });
   }
-  // leader up the middle, with an upper tier of clouds between the lower limbs and a crown cloud on top
-  const lead = Math.round(kT + A * 0.75);
-  for (let k = kT + 1; k <= lead; k++) putWood(tc, tr, k);
-  const lower = clumps.slice();
-  for (let i = 0; i < lower.length; i++) {
-    const th = lower[i].th + Math.PI / lower.length;
-    const d = R * (0.28 + rng() * 0.1);
-    const tx = Math.round(ctr + d * Math.cos(th)), ty = Math.round(ctr + d * Math.sin(th));
-    const kk = Math.round(kT + A * (0.55 + rng() * 0.2));
-    const tip = limb(tc, tr, Math.round(kT + A * 0.35), tx, ty, kk, false);
-    const rx = R * (0.3 + rng() * 0.06);
-    clumps.push({ x: tip[0], y: tip[1], z: tip[2] + rx * 0.5, rx, rz: rx * o.puff });
-  }
-  { const rx = R * (0.38 + rng() * 0.05); clumps.push({ x: tc + 0.5, y: tr + 0.5, z: lead + rx * 0.45, rx, rz: rx * o.puff }); }
+  clumps.push({ x: tc + 0.5, y: tr + 0.5, rx: R * (0.38 + rng() * 0.05) });
 
-  // ---- 2. blossom clouds: flat-bottomed, rounder on top, fluffy edges ----
-  for (let k = 1; k <= KMAX; k++) for (let r = 0; r < N; r++) for (let c = 0; c < N; c++) {
+  // ---- 2. blossom: every cloud hangs from one flat top face (level F) that carries the code. An outer cloud's
+  //      underside is flat at the level where its 45° limb from the fork arrives, a little in from the cloud's near
+  //      edge; the inner clouds hang a level lower, around the leader. Toward the rim each cloud rounds off (more
+  //      so with more puff), with fluffy edges. The face sits a canopy's thickness (squash) above the highest underside.
+  const fork = b => [tc + (b.x > tc + 0.5 ? 1 : 0), tr + (b.y > tr + 0.5 ? 1 : 0)];
+  for (const b of clumps) if (b.limb) {
+    const [c0, r0] = fork(b), dx = b.x - c0, dy = b.y - r0, d = Math.hypot(dx, dy), t = Math.max(0, d - 0.55 * b.rx) / (d || 1);
+    b.bottom = kT + Math.round(Math.abs(dx * t) + Math.abs(dy * t)) + 1;
+  }
+  const low = clumps.filter(b => b.limb), lowest = Math.min(...low.map(b => b.bottom)), highest = Math.max(...low.map(b => b.bottom));
+  for (const b of clumps) if (!b.limb) b.bottom = lowest - 1;
+  const F = Math.min(KMAX - 1, Math.round(highest + A * 0.8)), round = 0.4 * o.puff;
+  for (let k = 1; k <= F; k++) for (let r = 0; r < N; r++) for (let c = 0; c < N; c++) {
     if (vox[idx(c, r, k)]) continue;
-    let f = Infinity;
-    for (const b of clumps) {
-      const dz = k - b.z, sz = dz < 0 ? b.rz * 0.7 : b.rz;   // flatter underside
-      const dx = (c - b.x) / b.rx, dy = (r - b.y) / b.rx;
-      f = Math.min(f, Math.hypot(dx, dy, dz / sz));
-    }
     const nz = (noise3(c * 0.45, r * 0.45, k * 0.45, seed) - 0.5) * 0.5 + (noise3(c * 1.2, r * 1.2, k * 1.2, seed + 9) - 0.5) * 0.3;
-    if (f + nz * o.rough < 1) vox[idx(c, r, k)] = M.LEAF;
-  }
-
-  // ---- 2b. umbrella cap: the whole code sits on one gently domed top surface ----
-  let pits = 0, capTop = 0;
-  if (o.onCanopy) {
-    const half = n / 2 + 1, Rc = half * Math.SQRT2;
-    let maxTop = 0;
-    for (let r = q - 1; r <= q + n; r++) for (let c = q - 1; c <= q + n; c++) for (let k = KMAX; k >= 1; k--) if (vox[idx(c, r, k)]) { maxTop = Math.max(maxTop, k); break; }
-    capTop = maxTop - 1;
-    const target = (c, r) => capTop - Math.round(o.dome * ((c - ctr) ** 2 + (r - ctr) ** 2) / (Rc * Rc));
-    for (let r = q - 1; r <= q + n; r++) for (let c = q - 1; c <= q + n; c++) {
-      if (!inGrid(c, r)) continue;
-      const T = target(c, r);
-      for (let k = T + 1; k <= KMAX; k++) if (vox[idx(c, r, k)] === M.LEAF) vox[idx(c, r, k)] = 0;
-      let top = 0; for (let k = T; k >= 1; k--) if (vox[idx(c, r, k)]) { top = k; break; }
-      const from = top >= T - o.capDepth ? top + 1 : T - 2;
-      for (let k = Math.max(1, from); k <= T; k++) if (!vox[idx(c, r, k)]) vox[idx(c, r, k)] = M.LEAF;
+    for (const b of clumps) {
+      const rho2 = ((c - b.x) ** 2 + (r - b.y) ** 2) / (b.rx * b.rx), depth = F - b.bottom;
+      // inside while the depth below the face is less than depth · (1 − ρ²)^round
+      if (rho2 < 1 && depth > 0 && (F - k) / depth - Math.pow(1 - rho2, round) + nz * o.rough * 0.4 < 0) { vox[idx(c, r, k)] = M.LEAF; break; }
     }
   }
+  // the code and a one-module ring around it always sit on the face, at least two cubes thick
+  for (let r = q - 1; r <= q + n; r++) for (let c = q - 1; c <= q + n; c++) if (inGrid(c, r))
+    for (let k = F - 1; k <= F; k++) if (!vox[idx(c, r, k)]) vox[idx(c, r, k)] = M.LEAF;
+  // a leader carries on up from the fork through the canopy to the face
+  for (let k = kT + 1; k <= F; k++) vox[idx(tc, tr, k)] = M.WOOD;
 
-  // ---- 3. printability: bottom-up, keep only what rests on the layer below or hangs ≤ L cubes sideways ----
+  // ---- 3. limbs: from the fork, climb outward toward each outer cloud as a staircase, one cube sideways per level
+  //      and two cubes thick, until they are inside the canopy ----
   const DIRS = [[1, 0], [-1, 0], [0, 1], [0, -1]];
-  let trimmed = 0, unsupportedWood = 0;
-  for (let k = 1; k <= KMAX; k++) {
-    const dist = new Int16Array(N * N).fill(-1), queue = [];
-    for (let r = 0; r < N; r++) for (let c = 0; c < N; c++) {
-      if (!vox[idx(c, r, k)]) continue;
-      if (k === 1 || vox[idx(c, r, k - 1)]) { dist[r * N + c] = 0; queue.push(c, r); }
+  let limbCubes = 0;
+  const putWood = (c, r, k) => { if (inGrid(c, r) && k >= 1 && k <= F && vox[idx(c, r, k)] !== M.WOOD) { vox[idx(c, r, k)] = M.WOOD; limbCubes++; } };
+  const leafy = (c, r, k) => k > F || vox[idx(c, r, k)] === M.LEAF;
+  for (const b of clumps) {
+    if (!b.limb) continue;
+    let [c, r] = fork(b), k = kT;
+    const tx = Math.round(b.x), ty = Math.round(b.y);
+    for (let steps = 0; steps < 60 && !leafy(c, r, k + 1); steps++) {
+      if (c !== tx || r !== ty) {
+        if (Math.abs(tx - c) >= Math.abs(ty - r)) c += Math.sign(tx - c); else r += Math.sign(ty - r);
+        putWood(c, r, k); putWood(c, r, k - 1);
+      }
+      putWood(c, r, ++k);
     }
-    for (let h = 0; h < queue.length; h += 2) {
-      const c = queue[h], r = queue[h + 1], d = dist[r * N + c]; if (d >= L) continue;
-      for (const [dc, dr] of DIRS) { const c2 = c + dc, r2 = r + dr; if (!inGrid(c2, r2) || !vox[idx(c2, r2, k)] || dist[r2 * N + c2] >= 0) continue; dist[r2 * N + c2] = d + 1; queue.push(c2, r2); }
-    }
-    for (let r = 0; r < N; r++) for (let c = 0; c < N; c++) {
-      const i = idx(c, r, k); if (!vox[i] || dist[r * N + c] >= 0) continue;
-      if (vox[i] === M.LEAF) { vox[i] = 0; trimmed++; } else unsupportedWood++;
-    }
+    putWood(c, r, k + 1);   // one cube into the canopy
+  }
+  for (let i = idx(0, 0, F + 1); i < vox.length; i++) vox[i] = 0;
+
+  // ---- 4. printability, upside down: a canopy column must hang unbroken from the face, so blossom below its first
+  //      gap is dropped; every other cube with nothing above it (inner limb steps, roots) gets a 45° chamfer in the
+  //      empty cell above it, leaning on a solid neighbour there (a one-cube gap is filled solid instead) ----
+  const solid = (c, r, k) => inGrid(c, r) && k >= 1 && k <= F && vox[idx(c, r, k)] !== 0;
+  let trimmed = 0, ledges = 0;
+  for (let r = 0; r < N; r++) for (let c = 0; c < N; c++) {
+    let g = F; while (g >= 1 && vox[idx(c, r, g)]) g--;
+    for (let k = g; k >= 1; k--) if (vox[idx(c, r, k)] === M.LEAF) { vox[idx(c, r, k)] = 0; trimmed++; }
+  }
+  const chamfers = [];
+  for (let k = F - 1; k >= 1; k--) for (let r = 0; r < N; r++) for (let c = 0; c < N; c++) {
+    const v = vox[idx(c, r, k)];
+    if (!v || solid(c, r, k + 1)) continue;
+    if (solid(c, r, k + 2)) { vox[idx(c, r, k + 1)] = v; continue; }
+    const lean = DIRS.find(([dc, dr]) => solid(c + dc, r + dr, k + 1));
+    if (lean) chamfers.push({ c, r, k: k + 1, lean: [lean], hang: true }); else ledges++;
   }
 
-  // ---- 4. paint: the top cube of every column carries one QR pixel ----
+  // ---- 5. paint: the face carries the code; wood that nothing can see turns blossom-coloured (fewer colour swaps) ----
   const cubes = [], topK = new Int16Array(N * N).fill(0);
-  const paint = new Map();
-  for (let r = 0; r < N; r++) for (let c = 0; c < N; c++) {
-    let top = 0; for (let k = KMAX; k >= 1; k--) if (vox[idx(c, r, k)]) { top = k; break; }
-    topK[r * N + c] = top;
-    paint.set(idx(c, r, top), inCode(c, r) && dark(c, r) ? 'dark' : 'light');
-  }
+  const hidden = (c, r, k) => solid(c - 1, r, k) && solid(c + 1, r, k) && solid(c, r - 1, k) && solid(c, r + 1, k) && solid(c, r, k - 1) && solid(c, r, k + 1);
   let pinkCount = 0, whiteCount = 0, woodCount = 0, kTopMax = 0;
-  for (let r = 0; r < N; r++) for (let c = 0; c < N; c++) {
-    // plate cube: painted only where nothing stands on it
-    const pc = paint.get(idx(c, r, 0)) || 'light';
-    cubes.push({ c, r, k: 0, color: pc, kind: 'plate' });
-  }
-  for (let k = 1; k <= KMAX; k++) for (let r = 0; r < N; r++) for (let c = 0; c < N; c++) {
+  for (let r = 0; r < N; r++) for (let c = 0; c < N; c++) cubes.push({ c, r, k: 0, color: 'light', kind: 'plate' });
+  for (let k = 1; k <= F; k++) for (let r = 0; r < N; r++) for (let c = 0; c < N; c++) {
     const v = vox[idx(c, r, k)]; if (!v) continue;
-    const painted = paint.get(idx(c, r, k));
-    const color = painted || (v === M.WOOD ? 'wood' : 'dark');
-    cubes.push({ c, r, k, color, kind: painted ? 'top' : v === M.WOOD ? 'wood' : 'leaf' });
+    const face = k === F;
+    const color = face ? (dark(c, r) ? 'dark' : 'light') : v === M.WOOD && !hidden(c, r, k) ? 'wood' : 'dark';
+    cubes.push({ c, r, k, color, kind: face ? 'top' : v === M.WOOD ? 'wood' : 'leaf' });
+    if (face) topK[r * N + c] = k;
     if (color === 'dark') pinkCount++; else if (color === 'light') whiteCount++; else woodCount++;
     kTopMax = Math.max(kTopMax, k);
   }
+  // a chamfer takes the colour of the cube it holds
+  const colourAt = new Map(); for (const cb of cubes) colourAt.set(idx(cb.c, cb.r, cb.k), cb.color);
+  for (const w of chamfers) w.color = colourAt.get(idx(w.c, w.r, w.k - 1));
   // colour-swap levels (two or more colours in the same cube level)
-  const lv = new Map(); for (const cb of cubes) { if (!lv.has(cb.k)) lv.set(cb.k, new Set()); lv.get(cb.k).add(cb.color); }
+  const lv = new Map(); for (const cb of cubes.concat(chamfers)) { if (cb.k === 0) continue; if (!lv.has(cb.k)) lv.set(cb.k, new Set()); lv.get(cb.k).add(cb.color); }
   let mixedLevels = 0; for (const [, s] of lv) mixedLevels += s.size - 1;
-  // which code cells sit on the canopy (vs. on the plate)
-  let onCanopy = 0, topMin = Infinity, topMax = 0;
-  for (let r = q; r < q + n; r++) for (let c = q; c < q + n; c++) { const t = topK[r * N + c]; if (t > 0) { onCanopy++; topMin = Math.min(topMin, t); topMax = Math.max(topMax, t); } }
-  return { cubes, vox, N, n, q, KMAX, capTop, kTopMax, kT, topK, trimmed, unsupportedWood, limbCubes, pinkCount, whiteCount, woodCount, mixedLevels, onCanopy, topMin, topMax, maxH: L };
+  let onCanopy = 0; for (let r = q; r < q + n; r++) for (let c = q; c < q + n; c++) if (topK[r * N + c] === F) onCanopy++;
+  return { cubes, chamfers, vox, N, n, q, KMAX, F, kT, kTopMax, topK, trunkCells, trimmed, ledges, limbCubes, pinkCount, whiteCount, woodCount, mixedLevels, onCanopy, topMin: F, topMax: F };
 }
 
 function canopyBoxes(m, s) {

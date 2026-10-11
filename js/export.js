@@ -1,65 +1,134 @@
-// SakuraQR exporter: per-colour closed voxel shells -> multi-colour 3MF, per-colour binary STL (zipped),
+// SakuraQR exporter: per-colour closed shells -> multi-colour 3MF, per-colour binary STL (zipped),
 // and a crisp top-view PNG for scan testing.
 //
-// Print coordinates: X = column, Y = flipped row, Z = level, all in millimetres, so that looking down
-// on the print bed shows the QR code the right way round (not mirrored).
+// Everything is exported the way it prints: the tree upside down with the code face on the bed, its trunk ending in a
+// square peg, and next to it the base with a matching socket. Print coordinates: X = column, Y = row, Z up, in
+// millimetres; this is the assembled tree turned over about the X axis, so it is not mirrored.
 const SakuraExport = (function () {
   const PART_ORDER = ['dark', 'light', 'wood'];
+  const ID = { dark: 1, light: 2, wood: 3 };
 
-  // voxel colour grid; k = 0 is the plate. `merge` maps a colour onto another (e.g. wood -> light for 2 colours)
-  function colourGrid(model, merge) {
-    const { N, KMAX } = model, g = new Uint8Array(N * N * (KMAX + 2));
-    const id = { dark: 1, light: 2, wood: 3 };
-    for (const cb of model.cubes) {
-      const col = (merge && merge[cb.color]) || cb.color;
-      g[(cb.k * N + cb.r) * N + cb.c] = id[col];
-    }
-    return g;
+  // Cells of the tree as printed: level p = F - k (p = 0 lies on the bed), plus the peg one level further up under the
+  // trunk. Chamfers hang above a step in the tree, so printed they stand under it. `merge` maps a colour onto another
+  // (e.g. wood -> light for 2 colours).
+  function printGrid(model, merge) {
+    const { N, F } = model, P = F + 1, g = new Uint8Array(N * N * P), pieces = new Map();
+    const at = (c, r, p) => (p * N + r) * N + c;
+    const col = name => ID[(merge && merge[name]) || name];
+    for (const cb of model.cubes) if (cb.k > 0) g[at(cb.c, cb.r, F - cb.k)] = col(cb.color);
+    for (const [c, r] of model.trunkCells) g[at(c, r, F)] = col('wood');
+    for (const w of model.chamfers) { const i = at(w.c, w.r, F - w.k); g[i] = col(w.color); pieces.set(i, w); }
+    return { g, pieces, P };
   }
 
-  // closed surface of every cube of one colour: emit a face wherever the neighbour is not that colour
-  function shell(model, grid, colourId, s) {
-    const { N, KMAX } = model, verts = [], tris = [], index = new Map();
-    const at = (c, r, k) => (c < 0 || r < 0 || c >= N || r >= N || k < 0 || k > KMAX) ? 0 : grid[(k * N + r) * N + c];
-    const vid = (x, y, z) => {
-      const key = x + ',' + y + ',' + z;
+  // Which part of a cell face a cell covers. A face is split into four quarter triangles around its centre, one per
+  // cell edge: bit 2j (2j + 1) is the quarter on the low (high) edge of the face's j-th tangent axis. A cube covers
+  // whole faces; a chamfer wedge (z ≥ distance from the face it leans on) covers half of its two side faces.
+  const TANGENTS = [[1, 2], [0, 2], [0, 1]];
+  const QUARTERS = [[[0, 0], [0, 1]], [[1, 0], [1, 1]], [[0, 0], [1, 0]], [[0, 1], [1, 1]]];   // outer edge, as (u, v)
+  const quarter = (axis, tAxis, sign) => 1 << (2 * TANGENTS[axis].indexOf(tAxis) + (sign > 0 ? 1 : 0));
+  const leanAxis = ([dc, dr]) => dc ? [0, dc] : [1, dr];
+  function coverage(piece, axis, sign) {
+    if (!piece) return 15;
+    if (axis === 2) return sign > 0 ? 15 : 0;
+    const [la, ls] = leanAxis(piece.lean[0]);
+    if (la === axis) return ls === sign ? 15 : 0;
+    return quarter(axis, la, ls) | quarter(axis, 2, 1);
+  }
+  // the sloped underside of a (standing) wedge in cell-local (c, r, z), split at its side faces' centres
+  function slopes(piece) {
+    const [a, sa] = leanAxis(piece.lean[0]), u = 1 - a;
+    const P = (t, v, z) => { const p = [0, 0, z]; p[a] = sa > 0 ? 1 - t : t; p[u] = v; return p; };
+    const n = [0, 0, -1]; n[a] = -sa;
+    return [
+      { n, p: [P(0, 0, 0), P(0.5, 0, 0.5), P(0.5, 1, 0.5), P(0, 1, 0)] },
+      { n, p: [P(0.5, 0, 0.5), P(1, 0, 1), P(1, 1, 1), P(0.5, 1, 0.5)] }
+    ];
+  }
+  // the parts of a standing wedge that are not whole cell faces (for the preview)
+  function pieceFaces(piece) {
+    const out = slopes(piece);
+    for (let axis = 0; axis < 2; axis++) for (const sign of [1, -1]) {
+      const m = coverage(piece, axis, sign); if (!m || m === 15) continue;
+      const [t0, t1] = TANGENTS[axis], n = [0, 0, 0]; n[axis] = sign;
+      const pt = ([u, v]) => { const p = [0, 0, 0]; p[axis] = sign > 0 ? 1 : 0; p[t0] = u; p[t1] = v; return p; };
+      for (let b = 0; b < 4; b++) if (m & (1 << b)) out.push({ n, p: [pt(QUARTERS[b][0]), pt(QUARTERS[b][1]), pt([0.5, 0.5])] });
+    }
+    return out;
+  }
+
+  // closed surface of every cell of one colour: each quarter face a cell of that colour covers and its neighbour of
+  // the same colour does not, plus the sloped undersides of its wedges. `zOf(p)` gives the height of level plane p.
+  function shell(grid, N, colourId, s, zOf) {
+    const { g, pieces, P } = grid, verts = [], tris = [], index = new Map();
+    const inside = (c, r, p) => c >= 0 && r >= 0 && p >= 0 && c < N && r < N && p < P;
+    const vid = q => {
+      const key = q[0] * 2 + ',' + q[1] * 2 + ',' + q[2] * 2;
       let i = index.get(key);
-      if (i === undefined) { i = verts.length / 3; verts.push(x * s, y * s, z * s); index.set(key, i); }
+      if (i === undefined) {
+        const p0 = Math.floor(q[2]), z = p0 === q[2] ? zOf(p0) : (zOf(p0) + zOf(p0 + 1)) / 2;
+        i = verts.length / 3; verts.push(q[0] * s, q[1] * s, z); index.set(key, i);
+      }
       return i;
     };
-    // faces in print coordinates: [neighbour offset (dc, dr, dk), outward normal (x, y, z), 4 corners as (x, y, z) offsets]
-    const FACES = [
-      [[1, 0, 0], [1, 0, 0], [[1, 0, 0], [1, 1, 0], [1, 1, 1], [1, 0, 1]]],
-      [[-1, 0, 0], [-1, 0, 0], [[0, 0, 0], [0, 0, 1], [0, 1, 1], [0, 1, 0]]],
-      [[0, -1, 0], [0, 1, 0], [[0, 1, 0], [0, 1, 1], [1, 1, 1], [1, 1, 0]]],   // row - 1 is +Y
-      [[0, 1, 0], [0, -1, 0], [[0, 0, 0], [1, 0, 0], [1, 0, 1], [0, 0, 1]]],
-      [[0, 0, 1], [0, 0, 1], [[0, 0, 1], [1, 0, 1], [1, 1, 1], [0, 1, 1]]],
-      [[0, 0, -1], [0, 0, -1], [[0, 0, 0], [0, 1, 0], [1, 1, 0], [1, 0, 0]]]
-    ];
-    for (let k = 0; k <= KMAX; k++) for (let r = 0; r < N; r++) for (let c = 0; c < N; c++) {
-      if (grid[(k * N + r) * N + c] !== colourId) continue;
-      const x0 = c, y0 = N - 1 - r, z0 = k;
-      for (const [d, nrm, q] of FACES) {
-        if (at(c + d[0], r + d[1], k + d[2]) === colourId) continue;
-        const p = q.map(([x, y, z]) => [x0 + x, y0 + y, z0 + z]);
-        // order the quad so its triangles face outward
-        const ux = p[1][0] - p[0][0], uy = p[1][1] - p[0][1], uz = p[1][2] - p[0][2];
-        const vx = p[2][0] - p[0][0], vy = p[2][1] - p[0][1], vz = p[2][2] - p[0][2];
-        const dot = (uy * vz - uz * vy) * nrm[0] + (uz * vx - ux * vz) * nrm[1] + (ux * vy - uy * vx) * nrm[2];
-        const ids = p.map(v => vid(v[0], v[1], v[2]));
-        if (dot > 0) tris.push(ids[0], ids[1], ids[2], ids[0], ids[2], ids[3]);
-        else tris.push(ids[0], ids[2], ids[1], ids[0], ids[3], ids[2]);
+    const tri = (a, b, c, n) => {   // triangle facing n
+      const u = [b[0] - a[0], b[1] - a[1], b[2] - a[2]], v = [c[0] - a[0], c[1] - a[1], c[2] - a[2]];
+      const dot = (u[1] * v[2] - u[2] * v[1]) * n[0] + (u[2] * v[0] - u[0] * v[2]) * n[1] + (u[0] * v[1] - u[1] * v[0]) * n[2];
+      if (dot > 0) tris.push(vid(a), vid(b), vid(c)); else tris.push(vid(a), vid(c), vid(b));
+    };
+    const poly = (p, n) => { for (let i = 2; i < p.length; i++) tri(p[0], p[i - 1], p[i], n); };
+    for (let p = 0; p < P; p++) for (let r = 0; r < N; r++) for (let c = 0; c < N; c++) {
+      const i = (p * N + r) * N + c;
+      if (g[i] !== colourId) continue;
+      const me = pieces.get(i), cell = [c, r, p];
+      for (let axis = 0; axis < 3; axis++) for (const sign of [1, -1]) {
+        const nb = cell.slice(); nb[axis] += sign;
+        const j = inside(nb[0], nb[1], nb[2]) ? (nb[2] * N + nb[1]) * N + nb[0] : -1;
+        const show = coverage(me, axis, sign) & ~(j >= 0 && g[j] === colourId ? coverage(pieces.get(j), axis, -sign) : 0);
+        if (!show) continue;
+        const [t0, t1] = TANGENTS[axis], n = [0, 0, 0]; n[axis] = sign;
+        const pt = (u, v) => { const q = cell.slice(); if (sign > 0) q[axis] += 1; q[t0] += u; q[t1] += v; return q; };
+        if (show === 15) { poly([pt(0, 0), pt(1, 0), pt(1, 1), pt(0, 1)], n); continue; }
+        for (let b = 0; b < 4; b++) if (show & (1 << b)) tri(pt(...QUARTERS[b][0]), pt(...QUARTERS[b][1]), pt(0.5, 0.5), n);
       }
+      if (me) for (const f of slopes(me)) poly(f.p.map(q => [q[0] + c, q[1] + r, q[2] + p]), f.n);
     }
     return { verts, tris };
   }
 
-  // parts = [{ key, name, hex, verts, tris }]
-  function buildParts(model, s, colours, merge) {
-    const grid = colourGrid(model, merge);
-    const id = { dark: 1, light: 2, wood: 3 };
-    return PART_ORDER.filter(k => !(merge && merge[k])).map(k => Object.assign({ key: k }, colours[k], shell(model, grid, id[k], s)))
+  // base: a slab with a square through-hole for the peg, `clear` mm wider than the trunk on every side
+  function baseMesh(model, s, opt, x0) {
+    const { N, trunkCells } = model, T = opt.baseCubes * s;
+    const c0 = Math.min(...trunkCells.map(t => t[0])), r0 = Math.min(...trunkCells.map(t => t[1]));
+    const X = [x0, x0 + c0 * s - opt.clear, x0 + (c0 + 2) * s + opt.clear, x0 + N * s];
+    const Y = [0, (N - r0 - 2) * s - opt.clear, (N - r0) * s + opt.clear, N * s];   // the base prints the right way up
+    const verts = [], tris = [], vi = {};
+    const v = (x, y, z) => { const k = x + ',' + y + ',' + z; if (vi[k] === undefined) { vi[k] = verts.length / 3; verts.push(X[x], Y[y], z * T); } return vi[k]; };
+    const quad = (a, b, c, d) => tris.push(a, b, c, a, c, d);   // counter-clockwise seen from outside
+    for (let i = 0; i < 3; i++) for (let j = 0; j < 3; j++) {
+      if (i === 1 && j === 1) continue;   // the hole
+      quad(v(i, j, 1), v(i + 1, j, 1), v(i + 1, j + 1, 1), v(i, j + 1, 1));
+      quad(v(i, j, 0), v(i, j + 1, 0), v(i + 1, j + 1, 0), v(i + 1, j, 0));
+    }
+    const wall = (a, b) => quad(v(...a, 0), v(...b, 0), v(...b, 1), v(...a, 1));   // a -> b with the solid on the left
+    for (const [a, b] of [[[0, 0], [1, 0]], [[1, 0], [2, 0]], [[2, 0], [3, 0]], [[3, 0], [3, 1]], [[3, 1], [3, 2]], [[3, 2], [3, 3]],
+      [[3, 3], [2, 3]], [[2, 3], [1, 3]], [[1, 3], [0, 3]], [[0, 3], [0, 2]], [[0, 2], [0, 1]], [[0, 1], [0, 0]],
+      [[1, 1], [1, 2]], [[1, 2], [2, 2]], [[2, 2], [2, 1]], [[2, 1], [1, 1]]]) wall(a, b);
+    return { verts, tris };
+  }
+
+  // parts = [{ key, name, hex, verts, tris }]: the tree's colour parts, then 'base'.
+  // opt = { baseCubes: base thickness in cubes, clear: socket clearance (mm), gap: spacing on the bed (mm) }
+  const DEFAULTS = { baseCubes: 2, clear: 0.2, gap: 6 };
+  function buildParts(model, s, colours, merge, options) {
+    const opt = Object.assign({}, DEFAULTS, options), grid = printGrid(model, merge), F = model.F;
+    // the peg reaches 0.4 mm short of the bottom of the base
+    const zOf = p => p <= F ? p * s : F * s + opt.baseCubes * s - 0.4;
+    const parts = PART_ORDER.filter(k => !(merge && merge[k])).map(k => Object.assign({ key: k }, colours[k], shell(grid, model.N, ID[k], s, zOf)))
       .filter(p => p.tris.length);
+    const base = colours.base || colours.light;
+    parts.push(Object.assign({ key: 'base', name: base.name, hex: base.hex }, baseMesh(model, s, opt, model.N * s + opt.gap)));
+    return parts;
   }
 
   // ---- binary STL ----
@@ -98,10 +167,12 @@ const SakuraExport = (function () {
       for (let t = 0; t < T.length; t += 3) tc.push('     <triangle v1="' + T[t] + '" v2="' + T[t + 1] + '" v3="' + T[t + 2] + '"/>\n');
       out.push(tc.join(''), '    </triangles>\n   </mesh>\n  </object>\n');
     });
-    const gid = parts.length + 2;
+    const tree = parts.map((p, i) => i).filter(i => parts[i].key !== 'base'), gid = parts.length + 2;
     out.push('  <object id="' + gid + '" type="model" name="' + esc(title) + '">\n   <components>\n');
-    parts.forEach((p, i) => out.push('    <component objectid="' + (i + 2) + '"/>\n'));
-    out.push('   </components>\n  </object>\n </resources>\n <build>\n  <item objectid="' + gid + '"/>\n </build>\n</model>\n');
+    tree.forEach(i => out.push('    <component objectid="' + (i + 2) + '"/>\n'));
+    out.push('   </components>\n  </object>\n </resources>\n <build>\n  <item objectid="' + gid + '"/>\n');
+    parts.forEach((p, i) => { if (p.key === 'base') out.push('  <item objectid="' + (i + 2) + '"/>\n'); });
+    out.push(' </build>\n</model>\n');
     return out.join('');
   }
   const CONTENT_TYPES = '<?xml version="1.0" encoding="UTF-8"?>\n<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types"><Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/><Default Extension="model" ContentType="application/vnd.ms-package.3dmanufacturing-3dmodel+xml"/></Types>\n';
@@ -171,6 +242,6 @@ const SakuraExport = (function () {
     return { triangles: T.length / 3, open, nonManifold };
   }
 
-  return { buildParts, to3MF, toSTLZip, stl, model3mf, zip, topViewCanvas, audit };
+  return { buildParts, to3MF, toSTLZip, stl, model3mf, zip, topViewCanvas, audit, pieceFaces, coverage, printGrid };
 })();
 if (typeof module !== 'undefined') module.exports = SakuraExport;
