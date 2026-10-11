@@ -159,7 +159,7 @@ function buildCanopyTree(mat, o) {
   // which code cells sit on the canopy (vs. on the plate)
   let onCanopy = 0, topMin = Infinity, topMax = 0;
   for (let r = q; r < q + n; r++) for (let c = q; c < q + n; c++) { const t = topK[r * N + c]; if (t > 0) { onCanopy++; topMin = Math.min(topMin, t); topMax = Math.max(topMax, t); } }
-  return { cubes, vox, N, n, q, KMAX, capTop, kTopMax, kT, topK, trimmed, unsupportedWood, limbCubes, pinkCount, whiteCount, woodCount, mixedLevels, onCanopy, topMin, topMax, maxH: L };
+  return { cubes, vox, N, n, q, KMAX, trunkCells, capTop, kTopMax, kT, topK, trimmed, unsupportedWood, limbCubes, pinkCount, whiteCount, woodCount, mixedLevels, onCanopy, topMin, topMax, maxH: L };
 }
 
 function canopyBoxes(m, s) {

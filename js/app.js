@@ -3,7 +3,7 @@
   const LIGHTS = { blush: ['浅粉', '#FAD6E2'], petal: ['花瓣粉', '#F7C6D6'], white: ['白', '#F5F2EF'] };
   const COLORS = { brown: '#6E4A34' };
   const FIXED = { maxLedge: 2 };
-  const state = { text: '', ecc: 'Q', upper: true, mask: -1, onCanopy: true, dome: 6, module: 4, trunk: 9, crown: 1, squash: 0.7, lobes: 4, puff: 0.85, rough: 1, ledge: '2', wood: 'brown', pink: 'rouge', light: 'blush', view: 'orbit', dist: 60, off: 0, seedAdd: 0 };
+  const state = { text: '', ecc: 'Q', upper: true, mask: -1, onCanopy: false, dome: 6, module: 4, trunk: 9, crown: 1, squash: 0.7, lobes: 4, puff: 0.85, rough: 1, ledge: '2', layout: 'one-piece', clear: 0.2, wood: 'brown', pink: 'rouge', light: 'blush', view: 'orbit', dist: 200, off: 0, seedAdd: 0 };
   const $ = id => document.getElementById(id);
   let T = null, renderer, scanRenderer, scene, group, dirLight, orbitCam, topCam, phoneCam, model = null, needsRender = true;
   let blockMesh = null, blockMat = null, geomTags = null;
@@ -38,7 +38,7 @@
     upd();
     el.addEventListener('input', () => { upd(); full ? schedule() : scheduleScan(true); });
   }
-  bindSeg('ecc', 'ecc'); bindSeg('ledge', 'ledge'); bindSeg('wood', 'wood', () => applyColors());
+  bindSeg('ecc', 'ecc'); bindSeg('ledge', 'ledge'); bindSeg('layout', 'layout', () => updateLayout()); bindSeg('wood', 'wood', () => applyColors());
   bindRange('module', 'module', v => v + ' mm');
   bindRange('trunk', 'trunk', v => v + ' 格');
   bindRange('crown', 'crown', v => Math.round(v * 100) + '%');
@@ -52,6 +52,7 @@
   $('oncanopy').addEventListener('change', e => { state.onCanopy = e.target.checked; schedule(); });
   bindRange('dist', 'dist', v => v + ' cm', false);
   bindRange('off', 'off', v => v + ' mm', false);
+  bindRange('clear', 'clear', v => v.toFixed(2) + ' mm', false);
   $('reseed').addEventListener('click', () => { state.seedAdd++; schedule(); });
   $('txt').addEventListener('input', schedule);
   $('panel').addEventListener('submit', e => e.preventDefault());
@@ -351,6 +352,14 @@
   }
 
   // ---------- export ----------
+  function updateLayout() {
+    const split = state.layout === 'split';
+    $('rowClear').hidden = !split;
+    $('layoutNote').textContent = split
+      ? '树去掉底座倒过来打，树冠最高的那几格贴着平台，树干末端是方榫；底座单独正着打，中间留方孔。支撑耗材大约少一半到三分之二，也更矮、更好拆，但会落在树冠顶面（码点）上，可能留下痕迹。'
+      : '整棵树连底座正着打，支撑都在树冠下面看不到的地方。';
+  }
+  updateLayout();
   function exportColours() {
     return {
       dark: { name: '花 ' + PINKS[state.pink][0], hex: PINKS[state.pink][1] },
@@ -359,7 +368,7 @@
     };
   }
   function exportParts() {
-    return SakuraExport.buildParts(model, S(), exportColours(), state.wood === 'brown' ? null : { wood: 'light' });
+    return SakuraExport.buildParts(model, S(), exportColours(), state.wood === 'brown' ? null : { wood: 'light' }, { layout: state.layout, clear: state.clear });
   }
   function baseName() {
     const host = (state.encoded || 'sakura').replace(/^[a-z][a-z0-9+.-]*:\/\//i, '').replace(/[^A-Za-z0-9._-]+/g, '-').replace(/^-+|-+$/g, '').toLowerCase();
