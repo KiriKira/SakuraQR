@@ -4,6 +4,8 @@
 
 在线使用：<https://kirikira.github.io/SakuraQR/>
 
+每次推送到 `main`，GitHub Actions 会先跑冒烟测试，再把站点发布到 `gh-pages` 分支，由 GitHub Pages 提供访问。
+
 ## 怎么用
 
 1. 输入网址（默认 `https://muque.jp`），调树形和配色。
