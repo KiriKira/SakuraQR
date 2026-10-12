@@ -1,65 +1,90 @@
 // SakuraQR exporter: per-colour closed voxel shells -> multi-colour 3MF, per-colour binary STL (zipped),
 // and a crisp top-view PNG for scan testing.
 //
-// Print coordinates: X = column, Y = flipped row, Z = level, all in millimetres, so that looking down
-// on the print bed shows the QR code the right way round (not mirrored).
+// Two layouts:
+//  - 'one-piece': the tree standing on its plate. Print coordinates: X = column, Y = flipped row, Z = level, all in
+//    millimetres, so that looking down on the print bed shows the QR code the right way round (not mirrored).
+//  - 'split': the tree without its plate, turned upside down (about the X axis, so not mirrored) with its highest
+//    cubes on the bed and a square peg on the trunk's end; next to it the base: the plate, a second plate layer under
+//    it, the roots on top, and a square socket for the peg.
 const SakuraExport = (function () {
   const PART_ORDER = ['dark', 'light', 'wood'];
+  const ID = { dark: 1, light: 2, wood: 3 };
 
-  // voxel colour grid; k = 0 is the plate. `merge` maps a colour onto another (e.g. wood -> light for 2 colours)
-  function colourGrid(model, merge) {
-    const { N, KMAX } = model, g = new Uint8Array(N * N * (KMAX + 2));
-    const id = { dark: 1, light: 2, wood: 3 };
-    for (const cb of model.cubes) {
-      const col = (merge && merge[cb.color]) || cb.color;
-      g[(cb.k * N + cb.r) * N + cb.c] = id[col];
-    }
-    return g;
+  // a block of cells: colour ids at (k * N + r) * N + c, levels k = 0 .. K - 1
+  function cellGrid(N, K) {
+    const g = new Uint8Array(N * N * K);
+    return { N, K, g, set: (c, r, k, id) => { g[(k * N + r) * N + c] = id; } };
   }
 
-  // closed surface of every cube of one colour: emit a face wherever the neighbour is not that colour
-  function shell(model, grid, colourId, s) {
-    const { N, KMAX } = model, verts = [], tris = [], index = new Map();
-    const at = (c, r, k) => (c < 0 || r < 0 || c >= N || r >= N || k < 0 || k > KMAX) ? 0 : grid[(k * N + r) * N + c];
-    const vid = (x, y, z) => {
-      const key = x + ',' + y + ',' + z;
+  // closed surface of every cell of one colour: emit a face wherever the neighbour is not that colour.
+  // place(c, r, k) maps a cell corner to print coordinates in cube units.
+  function shell(cells, colourId, s, place) {
+    const { N, K, g } = cells, verts = [], tris = [], index = new Map();
+    const at = (c, r, k) => (c < 0 || r < 0 || c >= N || r >= N || k < 0 || k >= K) ? 0 : g[(k * N + r) * N + c];
+    const vid = p => {
+      const q = place(p[0], p[1], p[2]), key = q.join(',');
       let i = index.get(key);
-      if (i === undefined) { i = verts.length / 3; verts.push(x * s, y * s, z * s); index.set(key, i); }
+      if (i === undefined) { i = verts.length / 3; verts.push(q[0] * s, q[1] * s, q[2] * s); index.set(key, i); }
       return i;
     };
-    // faces in print coordinates: [neighbour offset (dc, dr, dk), outward normal (x, y, z), 4 corners as (x, y, z) offsets]
-    const FACES = [
-      [[1, 0, 0], [1, 0, 0], [[1, 0, 0], [1, 1, 0], [1, 1, 1], [1, 0, 1]]],
-      [[-1, 0, 0], [-1, 0, 0], [[0, 0, 0], [0, 0, 1], [0, 1, 1], [0, 1, 0]]],
-      [[0, -1, 0], [0, 1, 0], [[0, 1, 0], [0, 1, 1], [1, 1, 1], [1, 1, 0]]],   // row - 1 is +Y
-      [[0, 1, 0], [0, -1, 0], [[0, 0, 0], [1, 0, 0], [1, 0, 1], [0, 0, 1]]],
-      [[0, 0, 1], [0, 0, 1], [[0, 0, 1], [1, 0, 1], [1, 1, 1], [0, 1, 1]]],
-      [[0, 0, -1], [0, 0, -1], [[0, 0, 0], [0, 1, 0], [1, 1, 0], [1, 0, 0]]]
-    ];
-    for (let k = 0; k <= KMAX; k++) for (let r = 0; r < N; r++) for (let c = 0; c < N; c++) {
-      if (grid[(k * N + r) * N + c] !== colourId) continue;
-      const x0 = c, y0 = N - 1 - r, z0 = k;
-      for (const [d, nrm, q] of FACES) {
-        if (at(c + d[0], r + d[1], k + d[2]) === colourId) continue;
-        const p = q.map(([x, y, z]) => [x0 + x, y0 + y, z0 + z]);
-        // order the quad so its triangles face outward
-        const ux = p[1][0] - p[0][0], uy = p[1][1] - p[0][1], uz = p[1][2] - p[0][2];
-        const vx = p[2][0] - p[0][0], vy = p[2][1] - p[0][1], vz = p[2][2] - p[0][2];
-        const dot = (uy * vz - uz * vy) * nrm[0] + (uz * vx - ux * vz) * nrm[1] + (ux * vy - uy * vx) * nrm[2];
-        const ids = p.map(v => vid(v[0], v[1], v[2]));
-        if (dot > 0) tris.push(ids[0], ids[1], ids[2], ids[0], ids[2], ids[3]);
-        else tris.push(ids[0], ids[2], ids[1], ids[0], ids[3], ids[2]);
+    // place() is an axis flip or shift; a flip turns a face's winding inside out
+    const o = place(0, 0, 0), e = [place(1, 0, 0), place(0, 1, 0), place(0, 0, 1)].map(v => v.map((x, j) => x - o[j]));
+    const det = e[0][0] * (e[1][1] * e[2][2] - e[1][2] * e[2][1]) - e[0][1] * (e[1][0] * e[2][2] - e[1][2] * e[2][0]) + e[0][2] * (e[1][0] * e[2][1] - e[1][1] * e[2][0]);
+    const TAN = [[1, 2], [2, 0], [0, 1]];   // (t0, t1, axis) is right-handed
+    for (let k = 0; k < K; k++) for (let r = 0; r < N; r++) for (let c = 0; c < N; c++) {
+      if (g[(k * N + r) * N + c] !== colourId) continue;
+      for (let axis = 0; axis < 3; axis++) for (const sign of [1, -1]) {
+        const nb = [c, r, k]; nb[axis] += sign;
+        if (at(nb[0], nb[1], nb[2]) === colourId) continue;
+        const [t0, t1] = TAN[axis], pt = (u, v) => { const p = [c, r, k]; if (sign > 0) p[axis] += 1; p[t0] += u; p[t1] += v; return p; };
+        let q = [pt(0, 0), pt(1, 0), pt(1, 1), pt(0, 1)];   // counter-clockwise around +axis
+        if (sign * det < 0) q = q.reverse();
+        const ids = q.map(vid);
+        tris.push(ids[0], ids[1], ids[2], ids[0], ids[2], ids[3]);
       }
     }
     return { verts, tris };
   }
 
-  // parts = [{ key, name, hex, verts, tris }]
-  function buildParts(model, s, colours, merge) {
-    const grid = colourGrid(model, merge);
-    const id = { dark: 1, light: 2, wood: 3 };
-    return PART_ORDER.filter(k => !(merge && merge[k])).map(k => Object.assign({ key: k }, colours[k], shell(model, grid, id[k], s)))
+  // an axis-aligned box in millimetres, faces outward
+  function box(x0, y0, z0, x1, y1, z1) {
+    const one = cellGrid(1, 1); one.g[0] = 1;
+    return shell(one, 1, 1, (c, r, k) => [c ? x1 : x0, r ? y1 : y0, k ? z1 : z0]);
+  }
+
+  // parts = [{ key, name, hex, verts, tris, object }], object 'tree' or 'base'.
+  // `merge` maps a colour onto another (e.g. wood -> light for 2 colours).
+  // opt = { layout: 'one-piece' | 'split', clear: peg clearance per side (mm), gap: tree-to-base spacing (mm) }
+  function buildParts(model, s, colours, merge, options) {
+    const opt = Object.assign({ layout: 'one-piece', clear: 0.2, gap: 6, baseName: '底座' }, options);
+    const { N, KMAX, kTopMax: T } = model, keys = PART_ORDER.filter(k => !(merge && merge[k]));
+    const id = name => ID[(merge && merge[name]) || name];
+    const parts = (cells, place, object, suffix) => keys.map(k => Object.assign({ key: k, object }, colours[k], suffix ? { name: colours[k].name + suffix } : null, shell(cells, ID[k], s, place)))
       .filter(p => p.tris.length);
+    if (opt.layout !== 'split') {
+      const cells = cellGrid(N, KMAX + 1);
+      for (const cb of model.cubes) cells.set(cb.c, cb.r, cb.k, id(cb.color));
+      return parts(cells, (c, r, k) => [c, N - r, k], 'tree');
+    }
+    const trunk = new Set(model.trunkCells.map(([c, r]) => c + ',' + r)), isTrunk = cb => trunk.has(cb.c + ',' + cb.r);
+    const root = cb => cb.k === 1 && cb.kind === 'wood' && !isTrunk(cb);
+    // tree, upside down: level k prints at height T - k; Y runs the other way, so this is a turn, not a mirror
+    const tree = cellGrid(N, T);
+    for (const cb of model.cubes) if (cb.k >= 1 && !root(cb)) tree.set(cb.c, cb.r, T - cb.k, id(cb.color));
+    const out = parts(tree, (c, r, k) => [c, r, k], 'tree');
+    // peg: the trunk's end, `clear` thinner on every side, 0.4 mm shorter than the socket is deep
+    const c0 = Math.min(...model.trunkCells.map(t => t[0])), r0 = Math.min(...model.trunkCells.map(t => t[1]));
+    const peg = box(c0 * s + opt.clear, r0 * s + opt.clear, T * s, (c0 + 2) * s - opt.clear, (r0 + 2) * s - opt.clear, T * s + 2 * s - 0.4);
+    const pegColour = colours[(merge && merge.wood) || 'wood'];
+    out.push(Object.assign({ key: 'peg', object: 'tree', name: pegColour.name + ' 榫头', hex: pegColour.hex }, peg));
+    // base, the right way up: an extra plate layer, the plate, the roots; the trunk's cells stay open as the socket
+    const base = cellGrid(N, 3), x0 = N + opt.gap / s;
+    for (const cb of model.cubes) {
+      if (cb.k === 0 && !isTrunk(cb)) { base.set(cb.c, cb.r, 0, id('light')); base.set(cb.c, cb.r, 1, id(cb.color)); }
+      if (root(cb)) base.set(cb.c, cb.r, 2, id(cb.color));
+    }
+    return out.concat(parts(base, (c, r, k) => [x0 + c, N - r, k], 'base', ' · ' + opt.baseName));
   }
 
   // ---- binary STL ----
@@ -98,10 +123,16 @@ const SakuraExport = (function () {
       for (let t = 0; t < T.length; t += 3) tc.push('     <triangle v1="' + T[t] + '" v2="' + T[t + 1] + '" v3="' + T[t + 2] + '"/>\n');
       out.push(tc.join(''), '    </triangles>\n   </mesh>\n  </object>\n');
     });
-    const gid = parts.length + 2;
-    out.push('  <object id="' + gid + '" type="model" name="' + esc(title) + '">\n   <components>\n');
-    parts.forEach((p, i) => out.push('    <component objectid="' + (i + 2) + '"/>\n'));
-    out.push('   </components>\n  </object>\n </resources>\n <build>\n  <item objectid="' + gid + '"/>\n </build>\n</model>\n');
+    // one object per print piece (the tree, and the base when split), each grouping its colour parts
+    const objects = [...new Set(parts.map(p => p.object || 'tree'))];
+    objects.forEach((ob, j) => {
+      out.push('  <object id="' + (parts.length + 2 + j) + '" type="model" name="' + esc(ob === 'tree' ? title : title + ' base') + '">\n   <components>\n');
+      parts.forEach((p, i) => { if ((p.object || 'tree') === ob) out.push('    <component objectid="' + (i + 2) + '"/>\n'); });
+      out.push('   </components>\n  </object>\n');
+    });
+    out.push(' </resources>\n <build>\n');
+    objects.forEach((ob, j) => out.push('  <item objectid="' + (parts.length + 2 + j) + '"/>\n'));
+    out.push(' </build>\n</model>\n');
     return out.join('');
   }
   const CONTENT_TYPES = '<?xml version="1.0" encoding="UTF-8"?>\n<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types"><Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/><Default Extension="model" ContentType="application/vnd.ms-package.3dmanufacturing-3dmodel+xml"/></Types>\n';
@@ -147,7 +178,7 @@ const SakuraExport = (function () {
     ]);
   }
   function toSTLZip(parts, base) {
-    return zip(parts.map(p => ({ name: base + '-' + p.key + '.stl', data: stl(p) })));
+    return zip(parts.map(p => ({ name: base + (p.object === 'base' ? '-base-' : '-') + p.key + '.stl', data: stl(p) })));
   }
 
   // top view as pixels: the colour of the highest cube in every column, `px` pixels per module

@@ -115,7 +115,7 @@ input[type=range] { width: 100%; accent-color: var(--accent); }
   <header>
     <span class="label">方块樱花 · 树冠顶层即二维码</span>
     <h1>一棵从上往下看<em>能扫</em>的方块樱花树</h1>
-    <p class="lede">先按像素画的套路搭一棵方块樱花树：短粗树干在中段分叉，主枝托起几团蓬松的花云。然后只给树冠每一列最顶上的那一格上色：深色码点保持花的颜色，浅色码点染成浅粉高光。默认把整个二维码（包括三个码眼）都放在微微拱起的树冠顶上，这样手机在几十厘米外就能扫。下方扫描器会在浏览器里实际解码。</p>
+    <p class="lede">先按像素画的套路搭一棵方块樱花树：短粗树干在中段分叉，主枝托起几团蓬松的花云。然后只给树冠每一列最顶上的那一格上色：深色码点保持花的颜色，浅色码点染成浅粉高光。树冠盖住的码点印在花尖上，其余的印在底座上，手机离远一点（两米左右）就能扫；也可以把整个码都托在树冠顶上，这样几十厘米外就能扫，只是树冠顶会被压平。下方扫描器会在浏览器里实际解码。</p>
   </header>
 
   <div class="layout">
@@ -142,8 +142,8 @@ input[type=range] { width: 100%; accent-color: var(--accent); }
           <p class="scanmsg" id="scanMsg">等待生成…</p>
           <div class="two">
             <div class="row">
-              <div class="rowhead"><span class="label">手机高度</span><span class="mono" id="distVal">60 cm</span></div>
-              <input type="range" id="dist" min="25" max="600" step="5" value="60">
+              <div class="rowhead"><span class="label">手机高度</span><span class="mono" id="distVal">200 cm</span></div>
+              <input type="range" id="dist" min="25" max="600" step="5" value="200">
             </div>
             <div class="row">
               <div class="rowhead"><span class="label">偏离中心</span><span class="mono" id="offVal">0 mm</span></div>
@@ -180,7 +180,7 @@ input[type=range] { width: 100%; accent-color: var(--accent); }
 
       <fieldset>
         <legend>树形</legend>
-        <label class="toggle"><input type="checkbox" id="oncanopy" checked> 整个码放在树冠顶上（推荐，能近距离扫）</label>
+        <label class="toggle"><input type="checkbox" id="oncanopy"> 整个码放在树冠顶上（码点没有高低差，能近距离扫，树冠顶会被压平）</label>
         <div class="row" id="rowDome">
           <div class="rowhead"><span class="label">顶面拱起</span><span class="mono" id="domeVal">6 格</span></div>
           <input type="range" id="dome" min="0" max="10" step="1" value="6">
@@ -256,6 +256,18 @@ input[type=range] { width: 100%; accent-color: var(--accent); }
           <button type="button" class="btn" id="dlstl">下载 STL（按颜色分件 · zip）</button>
           <button type="button" class="btn" id="dlpng">下载俯视图 PNG</button>
         </div>
+        <div class="row">
+          <span class="label">打印方式</span>
+          <div class="seg" id="layout">
+            <button type="button" id="layout-one" data-v="one-piece" aria-pressed="true">正放 · 一体</button>
+            <button type="button" id="layout-split" data-v="split" aria-pressed="false">倒置 · 底座分开</button>
+          </div>
+          <p class="sub" id="layoutNote"></p>
+        </div>
+        <div class="row" id="rowClear" hidden>
+          <div class="rowhead"><span class="label">插口间隙（每边）</span><span class="mono" id="clearVal">0.20 mm</span></div>
+          <input type="range" id="clear" min="0.05" max="0.4" step="0.05" value="0.2">
+        </div>
         <p class="sub" id="exportInfo"></p>
         <p class="sub">3MF 里每种颜色是同一个物体的一个部件，导入 Bambu Studio 或 PrusaSlicer 后给每个部件指定耗材即可；坐标单位是毫米，底面在 z = 0。俯视图 PNG 可以先用手机扫一下，确认网址能正常打开。</p>
       </fieldset>
@@ -266,7 +278,7 @@ input[type=range] { width: 100%; accent-color: var(--accent); }
     <h2>可行性要点</h2>
     <div class="notegrid">
       <div class="note key"><h3>短网址用字母数字模式</h3><p>网址的协议和域名不区分大小写，<span class="mono">https://muque.jp</span> 写成 <span class="mono">HTTPS://MUQUE.JP</span> 后可以用 QR 的字母数字模式（每两个字符 11 bit），放进最小的 21×21（版本 1），还能用 Q 级 25% 纠错。小写只能用字节模式，同样大小只剩 L 级 7% 纠错。注意：路径区分大小写，带路径的网址不要转大写。iOS 和 Android 自带相机都认大写网址，但老旧的第三方扫码器值得实测一下。</p></div>
-      <div class="note key"><h3>整个码放在树冠顶上</h3><p>视差来自码点之间的高度差。码眼在底座、码点在树冠顶时，高差有八九厘米，手机得退到 1.5–3 m。码变小以后，四根主枝朝四个角伸，树冠就能把三个码眼一起托住，顶面只微微拱起几格。实测模拟手机在 40 cm 到 1.5 m 都能识别，偏离中心 2 cm 也没问题。</p></div>
+      <div class="note key"><h3>整个码放在树冠顶上（可选）</h3><p>视差来自码点之间的高度差。码眼在底座、码点在树冠顶时，高差有八九厘米，手机得退到 1.5–3 m。码变小以后，四根主枝朝四个角伸，树冠就能把三个码眼一起托住，顶面只微微拱起几格。实测模拟手机在 40 cm 到 1.5 m 都能识别，偏离中心 2 cm 也没问题。</p></div>
       <div class="note key"><h3>其它“新”二维码为什么不用</h3><p>Micro QR（最小 11×11）、rMQR 长方形码、Aztec、Data Matrix 都更省面积，Aztec 的码眼还在正中心，很适合圆树冠。但手机自带相机和微信基本只认标准 QR，所以这里只在标准 QR 内部做优化：编码模式、版本、纠错和掩码。</p></div>
       <div class="note"><h3>掩码可以挑</h3><p>QR 有 8 种掩码，任何一种都能扫。自动模式会挑树冠顶面“零碎孤点”最少的那种，让粉色花团更成块。手动拖动可以看到同一网址的 8 种图案。QArt 一类艺术码算法能利用填充位控制更多码点，但短网址在版本 1 里几乎没有空闲位，收益很小。</p></div>
       <div class="note"><h3>打印</h3><p>每个方块要么压在下面的方块上，要么从旁边最多悬挑 2 格，超出的悬空花块直接削掉，所以默认不需要支撑。树冠内部是实心的，切片用稀疏填充即可。浅粉花尖集中在树冠顶面几层，换色次数比底座方案少，但单喷头 AMS 仍然要换几百次，双喷头机基本没有这部分成本。</p></div>
