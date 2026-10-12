@@ -38,7 +38,7 @@
     upd();
     el.addEventListener('input', () => { upd(); full ? schedule() : scheduleScan(true); });
   }
-  bindSeg('ecc', 'ecc'); bindSeg('ledge', 'ledge'); bindSeg('layout', 'layout', () => updateLayout()); bindSeg('wood', 'wood', () => applyColors());
+  bindSeg('ecc', 'ecc'); bindSeg('ledge', 'ledge'); bindSeg('layout', 'layout', () => { updateLayout(); updateStats(); }); bindSeg('wood', 'wood', () => applyColors());
   bindRange('module', 'module', v => v + ' mm');
   bindRange('trunk', 'trunk', v => v + ' 格');
   bindRange('crown', 'crown', v => Math.round(v * 100) + '%');
@@ -53,6 +53,7 @@
   bindRange('dist', 'dist', v => v + ' cm', false);
   bindRange('off', 'off', v => v + ' mm', false);
   bindRange('clear', 'clear', v => v.toFixed(2) + ' mm', false);
+  $('clear').addEventListener('input', () => updateStats());
   $('reseed').addEventListener('click', () => { state.seedAdd++; schedule(); });
   $('txt').addEventListener('input', schedule);
   $('panel').addEventListener('submit', e => e.preventDefault());
@@ -315,6 +316,10 @@
       ['~' + Math.round(swaps * 0.3) + ' g · ' + (swaps * 50 / 3600).toFixed(1) + ' h', 'AMS 冲刷废料与额外耗时（粗估）；双喷头约为 0']
     ];
     $('stats').innerHTML = cells.map(([v, l]) => '<div class="stat"><b>' + v + '</b><span>' + l + '</span></div>').join('');
+    // what a small cube size means in practice: the trunk is two cubes thick, the peg one clearance thinner per side
+    const pegW = 2 * s - 2 * state.clear;
+    $('moduleNote').textContent = '树宽约 ' + W().toFixed(0) + ' mm，树干 ' + (2 * s) + ' mm 粗' + (state.layout === 'split' ? '，榫头 ' + pegW.toFixed(1) + ' mm 见方' : '') + '。'
+      + (s < 3 ? '方块小于 3 mm 时细节只有几条线宽，建议 0.2 mm 喷嘴或 0.12 mm 层高；手机也要离得更近，大约和方块边长成正比。' : '');
     $('exportInfo').textContent = '当前模型 ' + W().toFixed(0) + ' × ' + W().toFixed(0) + ' × ' + H().toFixed(0) + ' mm，' + used.length + ' 个颜色部件。';
   }
   function rebuild() {

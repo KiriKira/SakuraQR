@@ -35,10 +35,11 @@ for (const [label, merge] of [['3 colours', null], ['2 colours', { wood: 'light'
 }
 
 // split layout: tree upside down on the bed with a peg on the trunk, base next to it with a socket
-for (const onCanopy of [true, false]) {
+// (also at the smallest cube size, 1.5 mm, where the clearance is a large share of the peg)
+for (const [onCanopy, s] of [[true, 4], [false, 4], [false, 1.5]]) {
   const m = onCanopy ? model : buildCanopyTree(qr.matrix, { quiet: 3, crown: 1, squash: 0.7, trunk: 9, lobes: 4, puff: 0.85, rough: 1, maxLedge: 2, onCanopy: false, seed: 12345 });
   const parts = SakuraExport.buildParts(m, s, colours, null, { layout: 'split', clear: 0.2 });
-  console.log('split, code ' + (onCanopy ? 'on the canopy' : 'on canopy and base') + ':');
+  console.log('split, ' + s + ' mm cubes, code ' + (onCanopy ? 'on the canopy' : 'on canopy and base') + ':');
   for (const p of parts) {
     const a = SakuraExport.audit(p);
     console.log('  ' + (p.object + '/' + p.key).padEnd(11), String(a.triangles).padStart(6), 'triangles, open edges', a.open);
@@ -55,8 +56,8 @@ for (const onCanopy of [true, false]) {
   console.log('  peg ' + pegW.toFixed(2) + ' x ' + pegD.toFixed(2) + ' x ' + pegL.toFixed(2) + ' mm into a ' + (2 * s) + ' x ' + (2 * s) + ' x ' + (2 * s) + ' mm socket; base ' + (base[3] - base[0]) + ' x ' + (base[4] - base[1]) + ' x ' + (base[5] - base[2]) + ' mm');
   if (Math.abs(2 * s - pegW - 0.4) > 1e-6 || Math.abs(2 * s - pegD - 0.4) > 1e-6 || !(pegL < 2 * s)) fail('peg does not fit the socket');
   if (plate !== m.N * m.N || baseCells.size !== 4) fail('unexpected plate or trunk');
-  fs.writeFileSync(path.join(out, 'sakura-split-' + (onCanopy ? 'canopy' : 'plate') + '.3mf'), SakuraExport.to3MF(parts, 'SakuraQR ' + text));
-  fs.writeFileSync(path.join(out, 'sakura-split-' + (onCanopy ? 'canopy' : 'plate') + '-stl.zip'), SakuraExport.toSTLZip(parts, 'sakura'));
+  fs.writeFileSync(path.join(out, 'sakura-split-' + (onCanopy ? 'canopy' : 'plate') + '-' + s + 'mm.3mf'), SakuraExport.to3MF(parts, 'SakuraQR ' + text));
+  fs.writeFileSync(path.join(out, 'sakura-split-' + (onCanopy ? 'canopy' : 'plate') + '-' + s + 'mm-stl.zip'), SakuraExport.toSTLZip(parts, 'sakura'));
 }
 
 // top view (one pixel block per module) as PPM
