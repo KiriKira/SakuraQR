@@ -82,6 +82,9 @@ textarea:focus-visible, button:focus-visible, input:focus-visible { outline: 2px
 .btn.primary:hover { filter: brightness(1.08); }
 .exports { display: flex; flex-wrap: wrap; gap: 8px; }
 .exports .btn { flex: 1 1 auto; }
+.recoout { font-size: .82rem; color: var(--muted); margin-top: 6px; }
+.recoout .reco { display: flex; gap: 8px; align-items: baseline; margin: 4px 0; color: var(--ink); }
+.recoout .reco .btn { padding: 3px 8px; font-size: .78rem; }
 input[type=range] { width: 100%; accent-color: var(--accent); }
 .swatches { display: flex; gap: 10px; flex-wrap: wrap; align-items: center; }
 .sw { width: 34px; height: 34px; border-radius: 50%; border: 2px solid var(--line); cursor: pointer; padding: 0; }
@@ -158,6 +161,10 @@ input[type=range] { width: 100%; accent-color: var(--accent); }
               <button type="button" id="lens-x3" data-v="x3" aria-pressed="false">3× 长焦</button>
             </div>
           </div>
+          <div class="row">
+            <button type="button" class="btn" id="recoBtn">按当前光线推荐配置</button>
+            <div class="recoout" id="recoOut"></div>
+          </div>
           <div class="two">
             <div class="row">
               <div class="rowhead"><span class="label">手机高度</span><span class="mono" id="distVal">40 cm</span></div>
@@ -185,6 +192,14 @@ input[type=range] { width: 100%; accent-color: var(--accent); }
             <button type="button" id="ecc-M" data-v="M" aria-pressed="false">M 15%</button>
             <button type="button" id="ecc-Q" data-v="Q" aria-pressed="true">Q 25%</button>
             <button type="button" id="ecc-H" data-v="H" aria-pressed="false">H 30%</button>
+          </div>
+        </div>
+        <div class="row">
+          <span class="label">码的大小</span>
+          <div class="seg" id="verUp">
+            <button type="button" id="verUp-0" data-v="0" aria-pressed="true">最小</button>
+            <button type="button" id="verUp-1" data-v="1" aria-pressed="false">大一号</button>
+            <button type="button" id="verUp-2" data-v="2" aria-pressed="false">大两号</button>
           </div>
         </div>
         <label class="toggle"><input type="checkbox" id="upper" checked> 网址转成大写（字母数字模式，码更小）</label>

@@ -3,10 +3,10 @@
   const LIGHTS = { blush: ['浅粉', '#FAD6E2'], petal: ['花瓣粉', '#F7C6D6'], white: ['白', '#F5F2EF'] };
   const COLORS = { brown: '#6E4A34' };
   const FIXED = { maxLedge: 2 };
-  const state = { text: '', ecc: 'Q', upper: true, mask: -1, onCanopy: false, place: 'centre', persp: true, perspDist: 80, dome: 6, module: 1.5, trunk: 5, crown: 1, squash: 0.7, lobes: 4, puff: 0.85, rough: 1, ledge: '2', layout: 'one-piece', clear: 0.2, wood: 'brown', pink: 'rouge', light: 'blush', view: 'orbit', dist: 40, off: 0, lens: 'main', simLight: 'even', seedAdd: 0 };
+  const state = { text: '', ecc: 'Q', upper: true, mask: -1, onCanopy: false, place: 'centre', persp: true, perspDist: 80, verUp: 0, dome: 6, module: 1.5, trunk: 5, crown: 1, squash: 0.7, lobes: 4, puff: 0.85, rough: 1, ledge: '2', layout: 'one-piece', clear: 0.2, wood: 'brown', pink: 'rouge', light: 'blush', view: 'orbit', dist: 40, off: 0, lens: 'main', simLight: 'even', seedAdd: 0 };
   const $ = id => document.getElementById(id);
   let T = null, renderer, scanRenderer, scene, group, hemi, dirLight, sim = null, orbitCam, topCam, phoneCam, model = null, needsRender = true;
-  let blockMesh = null, blockMat = null, geomTags = null;
+  let blockMesh = null, blockMat = null;
   const orbit = { theta: 0.72, phi: 1.1, radius: 400, init: false };
   const S = () => state.module;
 
@@ -38,7 +38,7 @@
     upd();
     el.addEventListener('input', () => { upd(); full ? schedule() : scheduleScan(true); });
   }
-  bindSeg('ecc', 'ecc'); bindSeg('ledge', 'ledge'); bindSeg('place', 'place'); bindSeg('layout', 'layout', () => { updateLayout(); updateStats(); }); bindSeg('wood', 'wood', () => applyColors()); bindSeg('lens', 'lens', () => { scanSoon(); sweepSoon(); }); bindSeg('simlight', 'simLight', () => { scanSoon(); sweepSoon(); });
+  bindSeg('ecc', 'ecc'); bindSeg('ledge', 'ledge'); bindSeg('place', 'place'); bindSeg('verUp', 'verUp'); bindSeg('layout', 'layout', () => { updateLayout(); updateStats(); }); bindSeg('wood', 'wood', () => applyColors()); bindSeg('lens', 'lens', () => { scanSoon(); sweepSoon(); }); bindSeg('simlight', 'simLight', () => { scanSoon(); sweepSoon(); });
   bindRange('module', 'module', v => v + ' mm');
   bindRange('trunk', 'trunk', v => v + ' 格');
   bindRange('crown', 'crown', v => Math.round(v * 100) + '%');
@@ -107,14 +107,7 @@
     }
     return k;
   }
-  function makeMatrix(text, ecc) {
-    const cands = QR.encode(text, { ecc });
-    let pick;
-    if (state.mask >= 0) pick = cands.find(x => x.mask === state.mask);
-    else { pick = cands[0]; let best = Infinity; for (const x of cands) { const s = lonely(x.matrix); if (s < best) { best = s; pick = x; } } }
-    const mode = QR.isAlnum(text) ? '字母数字模式' : '字节模式';
-    return { mat: pick.matrix, n: pick.n, version: pick.version, mask: pick.mask, mode, bytes: new TextEncoder().encode(text).length, cands };
-  }
+
 
   // ---------- voxel mesh (only faces that touch air) ----------
   const hexRGB = h => [1, 3, 5].map(i => parseInt(h.slice(i, i + 2), 16) / 255);
@@ -152,21 +145,25 @@
       if (cx * Nn[i] + cy * Nn[i + 1] + cz * Nn[i + 2] < 0) for (let k = 0; k < 3; k++) { const t = P[i + 3 + k]; P[i + 3 + k] = P[i + 6 + k]; P[i + 6 + k] = t; }
     }
     g.computeBoundingSphere();
-    geomTags = tags;
+    g.userData.tags = tags;
     return g;
   }
   function applyColors() {
     if (!blockMesh) return;
+    paint(blockMesh);
+    updateContrast(); updateStats();
+    needsRender = true; scheduleScan(false); sweepSoon();
+  }
+  function paint(mesh) {
+    const geomTags = mesh.geometry.userData.tags;
     const pink = hexRGB(PINKS[state.pink][1]), base = hexRGB(LIGHTS[state.light][1]), white = base, wood = hexRGB(state.wood === 'brown' ? COLORS.brown : LIGHTS[state.light][1]);
-    const ca = blockMesh.geometry.getAttribute('color');
+    const ca = mesh.geometry.getAttribute('color');
     for (let i = 0; i < geomTags.length; i++) {
       const t = geomTags[i];
       const c = t < 0 ? base : t >= 20 ? white.map(v => Math.min(1, v * (t - 20))) : t >= 10 ? wood.map(v => Math.min(1, v * (t - 10))) : pink.map(v => Math.min(1, v * t));
       ca.setXYZ(i, c[0], c[1], c[2]);
     }
     ca.needsUpdate = true;
-    updateContrast(); updateStats();
-    needsRender = true; scheduleScan(false); sweepSoon();
   }
 
   function initThree() {
@@ -376,6 +373,74 @@
     $('scanMsg').innerHTML = msg;
   }
 
+  // ---------- recommend a configuration for the chosen light ----------
+  // Tries the code's size, error correction and the tree's position (its look stays as set) and scores each with the
+  // phone simulation itself: how many distances decode with the main camera and 2x, under the chosen light, then under
+  // even light. (Forcing the shadowed modules dark with the free bits after the terminator was tried too: it never
+  // scored better here, because the binarizer reads a large uniformly dark patch as light.)
+  const RECO_D = [20, 25, 30, 40, 50, 60, 80, 100, 150, 200], RECO_LENS = ['main', 'x2'];
+  let reco = null;
+  const PLACE_NAMES = { centre: '树居中', corner: '树根在右下角' }, VER_NAMES = ['最小', '大一号', '大两号'];
+  function describe(c, d) {
+    return PLACE_NAMES[c.place] + ' · ' + d.n + '×' + d.n + '（' + VER_NAMES[c.verUp] + '）· ' + c.ecc + ' 级 · 底座 ' + (d.model.P * S()).toFixed(0) + ' mm';
+  }
+  function recommend() {
+    if (!model || reco) return;
+    clearTimeout(tSweep); sweepToken++; clearTimeout(tScan);
+    const target = state.simLight, lights = target === 'even' ? ['even'] : [target, 'even'];
+    const cands = [];
+    for (const place of state.onCanopy ? [state.place] : ['centre', 'corner']) for (const verUp of [0, 1]) for (const ecc of ['L', 'M', 'Q', 'H'])
+      cands.push(Object.assign({}, state, { place, verUp, ecc, mask: -1 }));
+    reco = { keep: { model, mesh: blockMesh, light: target }, results: [], token: {} };
+    const token = reco.token, total = cands.length;
+    $('recoBtn').disabled = true;
+    const step = () => {
+      if (!reco || reco.token !== token) return;
+      const cfg = cands.shift();
+      if (!cfg) return finishReco();
+      $('recoOut').textContent = '正在试第 ' + (total - cands.length) + ' / ' + total + ' 种配置…';
+      let d = null; try { d = design(cfg); } catch (e) { /* does not fit */ }
+      if (d) {
+        d.model.warp = cfg.persp ? perspectiveWarp(d.model, S(), cfg.perspDist * 10) : null;
+        const mesh = new T.Mesh(buildBlocks(d.model), blockMat); mesh.castShadow = mesh.receiveShadow = true; paint(mesh);
+        group.remove(blockMesh); group.add(mesh); model = d.model; blockMesh = mesh;
+        const score = lights.map(l => { state.simLight = l; let k = 0; for (const lens of RECO_LENS) for (const dist of RECO_D) { const r = phoneShot(dist * 10, lens); if (r && r.data === cfg.encoded) k++; } return k; });
+        state.simLight = target;
+        group.remove(mesh); mesh.geometry.dispose();
+        reco.results.push({ cfg, d, score });
+      }
+      setTimeout(step, 0);
+    };
+    setTimeout(step, 0);
+  }
+  function restoreReco() {
+    const k = reco.keep; group.remove(blockMesh); group.add(k.mesh); model = k.model; blockMesh = k.mesh; state.simLight = k.light;
+    reco = null; $('recoBtn').disabled = false;
+  }
+  function finishReco() {
+    const res = reco.results, max = RECO_LENS.length * RECO_D.length;
+    restoreReco();
+    // best first: distances under the chosen light, a little for even light; one distance more is not worth a plate
+    // 12 mm wider or moving the tree, two are
+    const rank = r => r.score[0] + 0.01 * (r.score[1] || 0) - 0.05 * r.d.model.P * S() - 0.5 * (r.cfg.place !== state.place) - 0.01 * (r.cfg.ecc !== state.ecc);
+    res.sort((a, b) => rank(b) - rank(a));
+    const light = SIM_LIGHTS[state.simLight];
+    $('recoOut').innerHTML = res.slice(0, 3).map((r, i) => '<div class="reco"><button type="button" class="btn" data-i="' + i + '">用这个</button> '
+      + escapeHTML(describe(r.cfg, r.d)) + '：' + light + '下 ' + r.score[0] + ' / ' + max + (r.score.length > 1 ? '，均匀散光下 ' + r.score[1] + ' / ' + max : '') + ' 个距离能扫</div>').join('')
+      + '<p class="sub">分数是主摄和 2× 在 20 cm 到 2 m 的 ' + RECO_D.length + ' 个距离里能扫的个数。树的外形参数保持不变。</p>';
+    $('recoOut').querySelectorAll('button').forEach(b => b.addEventListener('click', () => applyReco(res[+b.dataset.i].cfg)));
+    scanSoon(); sweepSoon(); needsRender = true;
+  }
+  function applyReco(c) {
+    for (const [id, key] of [['place', 'place'], ['verUp', 'verUp'], ['ecc', 'ecc']]) {
+      state[key] = c[key];
+      $(id).querySelectorAll('button').forEach(x => x.setAttribute('aria-pressed', String(x.dataset.v === String(c[key]))));
+    }
+    state.mask = -1; $('mask').value = -1; $('maskVal').textContent = '自动';
+    schedule();
+  }
+  $('recoBtn').addEventListener('click', recommend);
+
   // ---------- rebuild ----------
   function luma(hex) { const [r, g, b] = hexRGB(hex); return 0.299 * r + 0.587 * g + 0.114 * b; }
   function updateContrast() {
@@ -404,8 +469,42 @@
       + (s < 3 ? '方块小于 3 mm 时细节只有几条线宽，建议 0.2 mm 喷嘴或 0.12 mm 层高；手机也要离得更近，大约和方块边长成正比。' : '');
     $('exportInfo').textContent = '当前模型 ' + W().toFixed(0) + ' × ' + W().toFixed(0) + ' × ' + H().toFixed(0) + ' mm，' + used.length + ' 个颜色部件。';
   }
+  // Lamp positions the code should survive: around the recommended one (off the code's top-left corner, 45-60° up).
+  const LAMP_SET = [[210, 45], [225, 45], [240, 45], [210, 60], [225, 60], [240, 60]];
+  // the code + tree for a configuration (state, or a candidate the recommender tries):
+  //  - the version: the smallest that fits, plus cfg.verUp
+  //  - the tree: its shape does not depend on the pattern, so it is grown once
+  //  - the mask (automatic): fewest light modules in those shadows, then fewest lonely pixels
+  function design(cfg) {
+    const text = cfg.encoded, minV = QR.encode(text, { ecc: cfg.ecc })[0].version, version = Math.min(6, minV + (+cfg.verUp || 0));
+    const cands = QR.encode(text, { ecc: cfg.ecc, version });
+    const n = cands[0].n;
+    // 'corner': the trunk stands in the plate's bottom-right corner (the code's corner without a finder pattern), its
+    // outer edge one cell in, and the canopy hangs past the plate, so a lamp off the top-left corner throws the
+    // canopy's shadow past the code
+    const corner = cfg.place === 'corner' && !cfg.onCanopy, shift = corner ? (n + 1) / 2 : 0;
+    const opts = Object.assign({}, FIXED, {
+      crown: cfg.onCanopy ? cfg.crown * 1.45 : cfg.crown, squash: cfg.squash, trunk: cfg.trunk, lobes: cfg.lobes, rough: cfg.rough, puff: cfg.puff,
+      quiet: cfg.onCanopy ? 5 : 3, onCanopy: cfg.onCanopy, dome: cfg.dome, capDepth: 4, shift, over: corner ? Math.ceil(0.6 * n) : 0,
+      maxLedge: parseInt(cfg.ledge, 10), seed: strSeed(text) + cfg.seedAdd * 7919
+    });
+    let model = buildCanopyTree(cands[0].matrix, opts);
+    const lampShade = shadowedTops(model, LAMP_AT.lamp[0], LAMP_AT.lamp[1]);
+    const shades = LAMP_SET.map(([az, el]) => shadowedTops(model, az, el));
+    let pick = cands[0];
+    if (cfg.mask >= 0) pick = cands.find(x => x.mask === cfg.mask);
+    else {
+      let bs = Infinity;
+      for (const x of cands) { const sc = shades.reduce((a, sh) => a + shadowedLight(model, sh, x.matrix), 0) * 1000 + lonely(x.matrix); if (sc < bs) { bs = sc; pick = x; } }
+    }
+    model = buildCanopyTree(pick.matrix, opts);
+    model.inShadow = shadowedLight(model, lampShade, pick.matrix);
+    return { model, mat: pick.matrix, n, version, mask: pick.mask, mode: QR.isAlnum(text) ? '字母数字模式' : '字节模式' };
+  }
+
   function rebuild() {
     if (!T) return;
+    if (reco) { restoreReco(); $('recoOut').textContent = '设置改了，推荐已停止。'; }
     state.text = $('txt').value.trim();
     const prep = prepareText(state.text);
     state.encoded = prep.text;
@@ -418,33 +517,12 @@
     const err = $('err');
     if (!state.text) { err.textContent = '先输入一些文字。'; err.hidden = false; return; }
     let mi;
-    try { mi = makeMatrix(state.encoded, state.ecc); }
+    try { mi = design(state); model = mi.model; }
     catch (e) { err.textContent = '内容太长，当前纠错等级放不下。缩短文字或换低一级纠错。'; err.hidden = false; return; }
     if (mi.version > 4) { err.textContent = '码已到版本 ' + mi.version + '（' + mi.n + '×' + mi.n + '），方块很密，树会很大。建议缩短内容或用短链接。'; err.hidden = false; }
     else err.hidden = true;
     $('verInfo').textContent = '版本 ' + mi.version + ' · ' + mi.n + '×' + mi.n + ' · ' + mi.mode;
     $('maskVal').textContent = (state.mask < 0 ? '自动 · ' : '') + '第 ' + mi.mask + ' 号';
-
-    // 'corner': the trunk stands in the plate's bottom-right corner (the code's corner without a finder pattern), its
-    // outer edge one cell in, and the canopy hangs past the plate, so a lamp off the top-left corner throws the
-    // canopy's shadow past the code
-    const corner = state.place === 'corner' && !state.onCanopy, shift = corner ? (mi.n + 1) / 2 : 0;
-    const opts = Object.assign({}, FIXED, {
-      crown: state.onCanopy ? state.crown * 1.45 : state.crown, squash: state.squash, trunk: state.trunk, lobes: state.lobes, rough: state.rough, puff: state.puff,
-      quiet: state.onCanopy ? 5 : 3, onCanopy: state.onCanopy, dome: state.dome, capDepth: 4, shift, over: corner ? Math.ceil(0.6 * mi.n) : 0,
-      maxLedge: parseInt(state.ledge, 10), seed: strSeed(state.encoded) + state.seedAdd * 7919
-    });
-    model = buildCanopyTree(mi.mat, opts);
-    // automatic mask: the tree's shape does not depend on the pattern, so pick the pattern that leaves the fewest light
-    // modules in the recommended lamp's shadow (ties: fewest lonely pixels), and paint that one
-    const lampShade = shadowedTops(model, LAMP_AT.lamp[0], LAMP_AT.lamp[1]);
-    if (state.mask < 0) {
-      let best = null, bs = Infinity;
-      for (const x of mi.cands) { const sc = shadowedLight(model, lampShade, x.matrix) * 1000 + lonely(x.matrix); if (sc < bs) { bs = sc; best = x; } }
-      if (best.mask !== mi.mask) { mi.mat = best.matrix; mi.mask = best.mask; model = buildCanopyTree(mi.mat, opts); }
-      $('maskVal').textContent = '自动 · 第 ' + mi.mask + ' 号';
-    }
-    model.inShadow = shadowedLight(model, lampShade, mi.mat);
     model.warp = state.persp ? perspectiveWarp(model, S(), state.perspDist * 10) : null;
     $('rowPerspDist').hidden = !state.persp;
     while (group.children.length) { const c = group.children[0]; group.remove(c); if (c.geometry) c.geometry.dispose(); }
