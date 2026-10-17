@@ -3,9 +3,9 @@
   const LIGHTS = { blush: ['浅粉', '#FAD6E2'], petal: ['花瓣粉', '#F7C6D6'], white: ['白', '#F5F2EF'] };
   const COLORS = { brown: '#6E4A34' };
   const FIXED = { maxLedge: 2 };
-  const state = { text: '', ecc: 'Q', upper: true, mask: -1, onCanopy: false, dome: 6, module: 1.5, trunk: 5, crown: 1, squash: 0.7, lobes: 4, puff: 0.85, rough: 1, ledge: '2', layout: 'one-piece', clear: 0.2, wood: 'brown', pink: 'rouge', light: 'blush', view: 'orbit', dist: 40, off: 0, lens: 'main', seedAdd: 0 };
+  const state = { text: '', ecc: 'Q', upper: true, mask: -1, onCanopy: false, dome: 6, module: 1.5, trunk: 5, crown: 1, squash: 0.7, lobes: 4, puff: 0.85, rough: 1, ledge: '2', layout: 'one-piece', clear: 0.2, wood: 'brown', pink: 'rouge', light: 'blush', view: 'orbit', dist: 40, off: 0, lens: 'main', simLight: 'even', seedAdd: 0 };
   const $ = id => document.getElementById(id);
-  let T = null, renderer, scanRenderer, scene, group, dirLight, orbitCam, topCam, phoneCam, model = null, needsRender = true;
+  let T = null, renderer, scanRenderer, scene, group, hemi, dirLight, sim = null, orbitCam, topCam, phoneCam, model = null, needsRender = true;
   let blockMesh = null, blockMat = null, geomTags = null;
   const orbit = { theta: 0.72, phi: 1.1, radius: 400, init: false };
   const S = () => state.module;
@@ -38,7 +38,7 @@
     upd();
     el.addEventListener('input', () => { upd(); full ? schedule() : scheduleScan(true); });
   }
-  bindSeg('ecc', 'ecc'); bindSeg('ledge', 'ledge'); bindSeg('layout', 'layout', () => { updateLayout(); updateStats(); }); bindSeg('wood', 'wood', () => applyColors()); bindSeg('lens', 'lens', () => { scanSoon(); sweepSoon(); });
+  bindSeg('ecc', 'ecc'); bindSeg('ledge', 'ledge'); bindSeg('layout', 'layout', () => { updateLayout(); updateStats(); }); bindSeg('wood', 'wood', () => applyColors()); bindSeg('lens', 'lens', () => { scanSoon(); sweepSoon(); }); bindSeg('simlight', 'simLight', () => { scanSoon(); sweepSoon(); });
   bindRange('module', 'module', v => v + ' mm');
   bindRange('trunk', 'trunk', v => v + ' 格');
   bindRange('crown', 'crown', v => Math.round(v * 100) + '%');
@@ -177,7 +177,7 @@
     scanRenderer.shadowMap.enabled = false; // scanner assumes soft, even room light
     scanRenderer.setClearColor(0x968f8b, 1);
     scene = new T.Scene();
-    scene.add(new T.HemisphereLight(0xffffff, 0xd8cfd3, 0.72));
+    hemi = new T.HemisphereLight(0xffffff, 0xd8cfd3, 0.72); scene.add(hemi);
     dirLight = new T.DirectionalLight(0xffffff, 0.36);
     dirLight.position.set(-140, 320, -100); dirLight.castShadow = true;
     dirLight.shadow.mapSize.set(2048, 2048); dirLight.shadow.bias = -0.0008;
@@ -185,6 +185,9 @@
     const ground = new T.Mesh(new T.PlaneGeometry(6000, 6000), new T.ShadowMaterial({ opacity: 0.12 }));
     ground.rotation.x = -Math.PI / 2; ground.position.y = -0.05; ground.receiveShadow = true; scene.add(ground);
     blockMat = new T.MeshLambertMaterial({ vertexColors: true });
+    // extra lights for the scan simulation only (see simLight)
+    const bulb = new T.PointLight(0xffffff, 0.42, 0); bulb.visible = false; scene.add(bulb);
+    sim = { bulb, gloss: new T.MeshPhongMaterial({ vertexColors: true, shininess: 40, specular: 0x3a3a3a }) };
     group = new T.Group(); scene.add(group);
     orbitCam = new T.PerspectiveCamera(30, 1, 1, 20000);
     topCam = new T.OrthographicCamera(-100, 100, 100, -100, 1, 20000);
@@ -256,8 +259,30 @@
   const LENSES = { main: ['主摄', 72], x2: ['2×', 40], x3: ['3×', 26] }, FRAME_W = 1920, FRAME_H = 1440;
   const work = document.createElement('canvas');
   const wctx = work.getContext('2d', { willReadFrequently: true });
+  // Light for the simulated shot: 'even' soft room light; 'lamp' a desk lamp about 40 cm away, low (30°) from the
+  // left, with shadows; 'glare' a ceiling light just behind the phone over slightly glossy filament, so flat tops can
+  // throw a highlight into the camera.
+  const SIM_LIGHTS = { even: '均匀散光', lamp: '侧面台灯', glare: '顶灯反光' }, LAMP = [-350, 200, -60];   // mm from the tree
+  // The lamp is the scene's directional light moved low to the left: from 40 cm away its rays over a few
+  // centimetres of tree are nearly parallel.
+  function simRender(cam) {
+    const mode = state.simLight, { bulb, gloss } = sim, keep = [hemi.intensity, dirLight.intensity, dirLight.position.clone(), blockMesh.material];
+    bulb.visible = mode === 'glare'; dirLight.castShadow = mode === 'lamp';
+    if (mode === 'lamp') {   // exposed like a phone would: lit tops at full brightness, shadows at 40 % of that
+      const L = LAMP, e = Math.atan2(L[1], Math.hypot(L[0], L[2]));
+      hemi.intensity = 0.4; dirLight.intensity = 0.6 / Math.sin(e); dirLight.position.set(L[0], L[1], L[2]);
+    }
+    else if (mode === 'glare') {
+      hemi.intensity = 0.42; dirLight.intensity = 0; blockMesh.material = gloss;
+      bulb.position.set(cam.position.x + 60, cam.position.y + 150, cam.position.z + 40);
+    }
+    scanRenderer.shadowMap.enabled = mode === 'lamp'; scanRenderer.shadowMap.needsUpdate = true;
+    scanRenderer.render(scene, cam);
+    hemi.intensity = keep[0]; dirLight.intensity = keep[1]; dirLight.position.copy(keep[2]); blockMesh.material = keep[3];
+    bulb.visible = false; dirLight.castShadow = true;
+  }
   function decodeWith(cam, size) {
-    scanRenderer.setSize(size, size, false); scanRenderer.render(scene, cam);
+    scanRenderer.setSize(size, size, false); simRender(cam);
     work.width = work.height = size; wctx.drawImage(scanRenderer.domElement, 0, 0);
     return jsQR(wctx.getImageData(0, 0, size, size).data, size, size, { inversionAttempts: 'dontInvert' });
   }
@@ -289,7 +314,7 @@
         ok[lens].concat(false).forEach((v, i) => { if (v && a < 0) a = i; if (!v && a >= 0) { out.push(a === i - 1 ? SWEEP[a] + ' cm' : SWEEP[a] + '–' + SWEEP[i - 1] + ' cm'); a = -1; } });
         return out.length ? out.join('、') : '扫不出';
       };
-      $('scanRange').textContent = '能扫的距离（模拟，手机正对着码）：' + Object.keys(LENSES).map(l => LENSES[l][0] + ' ' + spans(l)).join(' · ');
+      $('scanRange').textContent = '能扫的距离（模拟，' + SIM_LIGHTS[state.simLight] + '，手机正对着码）：' + Object.keys(LENSES).map(l => LENSES[l][0] + ' ' + spans(l)).join(' · ');
       scanSoon();   // put the current shot back in the thumbnail
     };
     setTimeout(step, 0);
@@ -326,6 +351,8 @@
     let msg;
     if (ok2) msg = '解码结果：<span class="mono">' + escapeHTML(r2.data) + '</span>';
     else if (!ok1) msg = '连正俯视都扫不出，多半是花色和白色太接近。换深一点的花色试试。';
+    else if (state.simLight === 'lamp') msg = '侧面台灯的硬阴影会把一片码点压暗，解码器分不清深浅。码分在树冠和底座上时，树冠的影子正好落在底座的码上，台灯从哪个角度照都扫不出；换成窗边或顶灯这类散光再扫。';
+    else if (state.simLight === 'glare') msg = '光面耗材在顶灯下整片反光，深浅两种粉的对比被冲淡。换个角度避开反光，或用哑光耗材。（浏览器里的 jsQR 对反光比手机扫码软件更敏感。）';
     else if (mis >= 0.3) msg = '码点之间最大高差约 ' + span + ' cm，手机离得近时高处的码点被透视放大，错开约 ' + mis.toFixed(1) + ' 格。把手机拉高；或打开“整个码放在树冠顶上”，减小顶面拱起。';
     else msg = '几何上已基本对齐，失败多半来自偏离中心或颜色对比。把偏移调回 0，或换深一点的花色。';
     $('scanMsg').innerHTML = msg;
@@ -385,7 +412,7 @@
     blockMesh = new T.Mesh(buildBlocks(model), blockMat); blockMesh.castShadow = true; blockMesh.receiveShadow = true;
     group.add(blockMesh);
     const w = W(), sh = dirLight.shadow.camera;
-    sh.left = -w; sh.right = w; sh.top = w; sh.bottom = -w; sh.near = 1; sh.far = 2000; sh.updateProjectionMatrix();
+    sh.left = -1.8 * w; sh.right = 1.8 * w; sh.top = 1.8 * w; sh.bottom = -1.8 * w; sh.near = 1; sh.far = 2000; sh.updateProjectionMatrix();
     if (!orbit.init) { orbit.radius = Math.max(w, H()) * 3.1; orbit.init = true; }
     else if (orbit.width && orbit.width !== w) orbit.radius *= w / orbit.width;   // a new cube size keeps the framing
     orbit.width = w;

@@ -142,6 +142,14 @@ input[type=range] { width: 100%; accent-color: var(--accent); }
           <p class="scanmsg" id="scanMsg">等待生成…</p>
           <p class="scanmsg" id="scanRange"></p>
           <div class="row">
+            <span class="label">光线</span>
+            <div class="seg" id="simlight">
+              <button type="button" id="simlight-even" data-v="even" aria-pressed="true">均匀散光</button>
+              <button type="button" id="simlight-lamp" data-v="lamp" aria-pressed="false">侧面台灯</button>
+              <button type="button" id="simlight-glare" data-v="glare" aria-pressed="false">顶灯反光</button>
+            </div>
+          </div>
+          <div class="row">
             <span class="label">镜头</span>
             <div class="seg" id="lens">
               <button type="button" id="lens-main" data-v="main" aria-pressed="true">主摄</button>
