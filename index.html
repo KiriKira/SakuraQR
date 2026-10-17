@@ -140,10 +140,19 @@ input[type=range] { width: 100%; accent-color: var(--accent); }
             <span class="chip" id="chipPara">错位</span>
           </div>
           <p class="scanmsg" id="scanMsg">等待生成…</p>
+          <p class="scanmsg" id="scanRange"></p>
+          <div class="row">
+            <span class="label">镜头</span>
+            <div class="seg" id="lens">
+              <button type="button" id="lens-main" data-v="main" aria-pressed="true">主摄</button>
+              <button type="button" id="lens-x2" data-v="x2" aria-pressed="false">2× 长焦</button>
+              <button type="button" id="lens-x3" data-v="x3" aria-pressed="false">3× 长焦</button>
+            </div>
+          </div>
           <div class="two">
             <div class="row">
-              <div class="rowhead"><span class="label">手机高度</span><span class="mono" id="distVal">200 cm</span></div>
-              <input type="range" id="dist" min="25" max="600" step="5" value="200">
+              <div class="rowhead"><span class="label">手机高度</span><span class="mono" id="distVal">40 cm</span></div>
+              <input type="range" id="dist" min="15" max="300" step="5" value="40">
             </div>
             <div class="row">
               <div class="rowhead"><span class="label">偏离中心</span><span class="mono" id="offVal">0 mm</span></div>
@@ -187,13 +196,13 @@ input[type=range] { width: 100%; accent-color: var(--accent); }
         </div>
         <div class="two">
           <div class="row">
-            <div class="rowhead"><span class="label">方块边长</span><span class="mono" id="moduleVal">4 mm</span></div>
-            <input type="range" id="module" min="1.5" max="6" step="0.5" value="4">
+            <div class="rowhead"><span class="label">方块边长</span><span class="mono" id="moduleVal">1.5 mm</span></div>
+            <input type="range" id="module" min="1.5" max="6" step="0.5" value="1.5">
             <p class="sub" id="moduleNote"></p>
           </div>
           <div class="row">
-            <div class="rowhead"><span class="label">树干高度</span><span class="mono" id="trunkVal">9 格</span></div>
-            <input type="range" id="trunk" min="5" max="16" step="1" value="9">
+            <div class="rowhead"><span class="label">树干高度</span><span class="mono" id="trunkVal">5 格</span></div>
+            <input type="range" id="trunk" min="3" max="16" step="1" value="5">
           </div>
           <div class="row">
             <div class="rowhead"><span class="label">树冠大小</span><span class="mono" id="crownVal">100%</span></div>

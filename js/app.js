@@ -3,7 +3,7 @@
   const LIGHTS = { blush: ['浅粉', '#FAD6E2'], petal: ['花瓣粉', '#F7C6D6'], white: ['白', '#F5F2EF'] };
   const COLORS = { brown: '#6E4A34' };
   const FIXED = { maxLedge: 2 };
-  const state = { text: '', ecc: 'Q', upper: true, mask: -1, onCanopy: false, dome: 6, module: 4, trunk: 9, crown: 1, squash: 0.7, lobes: 4, puff: 0.85, rough: 1, ledge: '2', layout: 'one-piece', clear: 0.2, wood: 'brown', pink: 'rouge', light: 'blush', view: 'orbit', dist: 200, off: 0, seedAdd: 0 };
+  const state = { text: '', ecc: 'Q', upper: true, mask: -1, onCanopy: false, dome: 6, module: 1.5, trunk: 5, crown: 1, squash: 0.7, lobes: 4, puff: 0.85, rough: 1, ledge: '2', layout: 'one-piece', clear: 0.2, wood: 'brown', pink: 'rouge', light: 'blush', view: 'orbit', dist: 40, off: 0, lens: 'main', seedAdd: 0 };
   const $ = id => document.getElementById(id);
   let T = null, renderer, scanRenderer, scene, group, dirLight, orbitCam, topCam, phoneCam, model = null, needsRender = true;
   let blockMesh = null, blockMat = null, geomTags = null;
@@ -38,7 +38,7 @@
     upd();
     el.addEventListener('input', () => { upd(); full ? schedule() : scheduleScan(true); });
   }
-  bindSeg('ecc', 'ecc'); bindSeg('ledge', 'ledge'); bindSeg('layout', 'layout', () => { updateLayout(); updateStats(); }); bindSeg('wood', 'wood', () => applyColors());
+  bindSeg('ecc', 'ecc'); bindSeg('ledge', 'ledge'); bindSeg('layout', 'layout', () => { updateLayout(); updateStats(); }); bindSeg('wood', 'wood', () => applyColors()); bindSeg('lens', 'lens', () => { scanSoon(); sweepSoon(); });
   bindRange('module', 'module', v => v + ' mm');
   bindRange('trunk', 'trunk', v => v + ' 格');
   bindRange('crown', 'crown', v => Math.round(v * 100) + '%');
@@ -164,7 +164,7 @@
     }
     ca.needsUpdate = true;
     updateContrast(); updateStats();
-    needsRender = true; scheduleScan(false);
+    needsRender = true; scheduleScan(false); sweepSoon();
   }
 
   function initThree() {
@@ -221,8 +221,8 @@
     el.addEventListener('pointerup', up); el.addEventListener('pointercancel', up);
     el.addEventListener('wheel', e => { if (state.view !== 'orbit') return; e.preventDefault(); orbit.radius = clampR(orbit.radius * (1 + e.deltaY * 0.0012)); needsRender = true; }, { passive: false });
   }
-  function placePhone(cam, aspect) {
-    const D = state.dist * 10, off = state.off;
+  function placePhone(cam, aspect, dist) {
+    const D = dist || state.dist * 10, off = state.off;
     cam.aspect = aspect;
     cam.fov = 2 * Math.atan(((W() / 2 + off) / 0.85) / D) * 180 / Math.PI / Math.min(1, aspect);
     cam.position.set(off, D, 0); cam.up.set(0, 0, -1); cam.lookAt(off, 0, 0); cam.updateProjectionMatrix();
@@ -250,14 +250,51 @@
   }
 
   // ---------- scanning ----------
-  const work = document.createElement('canvas'); work.width = work.height = 480;
+  // A phone camera: a fixed field of view per lens and a fixed frame (scanner apps analyse frames of about 1080p).
+  // The simulated shot frames the model as placePhone does, rendered at the pixel density the phone really has there,
+  // so a small model seen from far away comes out as few pixels as it would on the phone.
+  const LENSES = { main: ['主摄', 72], x2: ['2×', 40], x3: ['3×', 26] }, FRAME_W = 1920, FRAME_H = 1440;
+  const work = document.createElement('canvas');
   const wctx = work.getContext('2d', { willReadFrequently: true });
-  function decodeWith(cam) {
-    scanRenderer.render(scene, cam);
-    wctx.drawImage(scanRenderer.domElement, 0, 0);
-    const img = wctx.getImageData(0, 0, 480, 480);
-    return jsQR(img.data, 480, 480, { inversionAttempts: 'dontInvert' });
+  function decodeWith(cam, size) {
+    scanRenderer.setSize(size, size, false); scanRenderer.render(scene, cam);
+    work.width = work.height = size; wctx.drawImage(scanRenderer.domElement, 0, 0);
+    return jsQR(wctx.getImageData(0, 0, size, size).data, size, size, { inversionAttempts: 'dontInvert' });
   }
+  function phoneShot(dist, lens) {
+    const cam = new T.PerspectiveCamera(40, 1, 1, 20000); placePhone(cam, 1, dist);
+    const t = Math.tan(cam.fov * Math.PI / 360), th = Math.tan(LENSES[lens][1] * Math.PI / 360), tv = th * FRAME_H / FRAME_W;
+    let size = FRAME_W * t / th;
+    if (t > tv) { cam.fov = 2 * Math.atan(tv) * 180 / Math.PI; cam.updateProjectionMatrix(); size = FRAME_H; }   // too close: the frame cuts the model off
+    return decodeWith(cam, Math.max(48, Math.min(960, Math.round(size))));
+  }
+  // where each lens can scan: try a range of distances in the background after every rebuild
+  const SWEEP = [15, 20, 25, 30, 40, 50, 60, 80, 100, 120, 150, 200, 250, 300];
+  let sweepToken = 0, tSweep = 0;
+  function sweepSoon() { clearTimeout(tSweep); sweepToken++; $('scanRange').textContent = '正在估算各镜头能扫的距离…'; tSweep = setTimeout(sweep, 400); }
+  function sweep() {
+    if (!model) return;
+    const token = ++sweepToken, ok = {}, jobs = [];
+    for (const lens of Object.keys(LENSES)) for (const d of SWEEP) jobs.push([lens, d]);
+    const step = () => {
+      if (token !== sweepToken) return;
+      const t0 = performance.now();
+      while (jobs.length && performance.now() - t0 < 30) {
+        const [lens, d] = jobs.shift(), r = phoneShot(d * 10, lens);
+        (ok[lens] = ok[lens] || []).push(!!r && r.data === state.encoded);
+      }
+      if (jobs.length) { setTimeout(step, 0); return; }
+      const spans = lens => {   // successful distances as ranges, e.g. "25–60 cm"
+        const out = []; let a = -1;
+        ok[lens].concat(false).forEach((v, i) => { if (v && a < 0) a = i; if (!v && a >= 0) { out.push(a === i - 1 ? SWEEP[a] + ' cm' : SWEEP[a] + '–' + SWEEP[i - 1] + ' cm'); a = -1; } });
+        return out.length ? out.join('、') : '扫不出';
+      };
+      $('scanRange').textContent = '能扫的距离（模拟，手机正对着码）：' + Object.keys(LENSES).map(l => LENSES[l][0] + ' ' + spans(l)).join(' · ');
+      scanSoon();   // put the current shot back in the thumbnail
+    };
+    setTimeout(step, 0);
+  }
+  function scanSoon() { scheduleScan(true); }
   // worst misregistration (in modules) between each visible blossom and its own code cell, seen from the phone
   function misregistration() {
     const s = S(), N = model.N, D = state.dist * 10, ox = state.off; let worst = 0;
@@ -277,13 +314,12 @@
     if (!model) return;
     const target = state.encoded;
     const oc = new T.OrthographicCamera(-1, 1, 1, -1, 1, 20000); placeTop(oc, 1, 1.15);
-    const r1 = decodeWith(oc);
-    const pc = new T.PerspectiveCamera(40, 1, 1, 20000); placePhone(pc, 1);
-    const r2 = decodeWith(pc);
+    const r1 = decodeWith(oc, 480);
+    const r2 = phoneShot(state.dist * 10, state.lens);
     $('scanThumb').getContext('2d').drawImage(scanRenderer.domElement, 0, 0, 224, 224);
     const ok1 = !!r1 && r1.data === target, ok2 = !!r2 && r2.data === target;
     setChip('chipOrtho', ok1 ? 'ok' : 'bad', ok1 ? '正俯视 可识别' : '正俯视 失败');
-    setChip('chipPhone', ok2 ? 'ok' : 'bad', '手机 ' + (state.dist / 100).toFixed(1) + ' m ' + (ok2 ? '可识别' : '失败'));
+    setChip('chipPhone', ok2 ? 'ok' : 'bad', '手机' + (state.lens === 'main' ? '' : ' ' + LENSES[state.lens][0]) + ' ' + (state.dist / 100).toFixed(1) + ' m ' + (ok2 ? '可识别' : '失败'));
     const mis = misregistration();
     setChip('chipPara', mis < 0.3 ? 'ok' : mis < 0.5 ? 'warn' : 'bad', '错位 ' + mis.toFixed(2) + ' 格');
     const span = ((model.topMax - model.topMin) * S() / 10).toFixed(1);
@@ -351,6 +387,8 @@
     const w = W(), sh = dirLight.shadow.camera;
     sh.left = -w; sh.right = w; sh.top = w; sh.bottom = -w; sh.near = 1; sh.far = 2000; sh.updateProjectionMatrix();
     if (!orbit.init) { orbit.radius = Math.max(w, H()) * 3.1; orbit.init = true; }
+    else if (orbit.width && orbit.width !== w) orbit.radius *= w / orbit.width;   // a new cube size keeps the framing
+    orbit.width = w;
     orbit.radius = clampR(orbit.radius);
     $('loading').hidden = true;
     applyColors();
