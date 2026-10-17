@@ -206,8 +206,8 @@ input[type=range] { width: 100%; accent-color: var(--accent); }
         <div class="row" id="rowPlace">
           <span class="label">树的位置</span>
           <div class="seg" id="place">
-            <button type="button" id="place-corner" data-v="corner" aria-pressed="true">偏右下（避开台灯阴影）</button>
-            <button type="button" id="place-centre" data-v="centre" aria-pressed="false">居中</button>
+            <button type="button" id="place-centre" data-v="centre" aria-pressed="true">居中</button>
+            <button type="button" id="place-corner" data-v="corner" aria-pressed="false">右下角（避开台灯阴影）</button>
           </div>
           <p class="sub" id="placeNote"></p>
         </div>
@@ -307,7 +307,7 @@ input[type=range] { width: 100%; accent-color: var(--accent); }
       <div class="note key"><h3>短网址用字母数字模式</h3><p>网址的协议和域名不区分大小写，<span class="mono">https://muque.jp</span> 写成 <span class="mono">HTTPS://MUQUE.JP</span> 后可以用 QR 的字母数字模式（每两个字符 11 bit），放进最小的 21×21（版本 1），还能用 Q 级 25% 纠错。小写只能用字节模式，同样大小只剩 L 级 7% 纠错。注意：路径区分大小写，带路径的网址不要转大写。iOS 和 Android 自带相机都认大写网址，但老旧的第三方扫码器值得实测一下。</p></div>
       <div class="note key"><h3>整个码放在树冠顶上（可选）</h3><p>视差来自码点之间的高度差。码眼在底座、码点在树冠顶时，高差有八九厘米，手机得退到 1.5–3 m。码变小以后，四根主枝朝四个角伸，树冠就能把三个码眼一起托住，顶面只微微拱起几格。实测模拟手机在 40 cm 到 1.5 m 都能识别，偏离中心 2 cm 也没问题。</p></div>
       <div class="note key"><h3>其它“新”二维码为什么不用</h3><p>Micro QR（最小 11×11）、rMQR 长方形码、Aztec、Data Matrix 都更省面积，Aztec 的码眼还在正中心，很适合圆树冠。但手机自带相机和微信基本只认标准 QR，所以这里只在标准 QR 内部做优化：编码模式、版本、纠错和掩码。</p></div>
-      <div class="note key"><h3>台灯放在码的左上方</h3><p>树冠的硬阴影会把浅色码点压暗，解码器会把它们当成深色。QR 只有右下角没有码眼，所以树默认偏向右下角，底座在那边加宽。台灯从左上方照、抬高 45°–70° 时，影子落在码外面的底座上，三个码眼都在亮处。树居中时，模拟里侧面台灯从哪个角度照都扫不出。</p></div>
+      <div class="note key"><h3>台灯放在码的左上方</h3><p>树冠的硬阴影会把浅色码点压暗，解码器会把它们当成深色。QR 只有右下角没有码眼。“树的位置”选“右下角”时，树根放在底座右下角，树冠伸出底座；台灯从左上方照、抬高 45°–70° 时，影子落到底座外面，三个码眼都在亮处。树居中时，模拟里侧面台灯从哪个角度照都扫不出。</p></div>
       <div class="note"><h3>掩码可以挑</h3><p>QR 有 8 种掩码，任何一种都能扫。自动模式会先挑左上方台灯阴影里浅色码点最少的那种，再挑树冠顶面“零碎孤点”最少的，让粉色花团更成块。手动拖动可以看到同一网址的 8 种图案。QArt 一类艺术码算法能利用填充位控制更多码点，但短网址在版本 1 里几乎没有空闲位，收益很小。</p></div>
       <div class="note"><h3>打印</h3><p>每个方块要么压在下面的方块上，要么从旁边最多悬挑 2 格，超出的悬空花块直接削掉，所以默认不需要支撑。树冠内部是实心的，切片用稀疏填充即可。浅粉花尖集中在树冠顶面几层，换色次数比底座方案少，但单喷头 AMS 仍然要换几百次，双喷头机基本没有这部分成本。</p></div>
       <div class="note"><h3>颜色</h3><p>花体用较深的粉，浅色码点染浅粉，正好成为顶面的高光。扫码只看灰度差，深浅两种粉要拉开足够距离，页面会实时显示。树干藏在树冠下，用棕色不影响扫码。</p></div>

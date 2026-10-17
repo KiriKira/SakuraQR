@@ -17,10 +17,10 @@ function noise3(x, y, z, seed) {
        trunk: bare trunk height (cubes), lobes: number of side lobes, rough: 0..1 surface lumpiness,
        maxLedge: 1..3 longest sideways overhang, seed,
        shift: move the tree this many cells toward the code's bottom-right corner (the one without a finder pattern),
-       pad: extra plate on the right and bottom for a shifted canopy }
+       over: room on the right and bottom, past the plate, for a shifted canopy to hang over (no plate there) }
 */
 function buildCanopyTree(mat, o) {
-  const n = mat.length, q = o.quiet, N = n + 2 * q + (o.pad || 0), ctr = q + (n - 1) / 2;
+  const n = mat.length, q = o.quiet, P = n + 2 * q, N = P + (o.over || 0), ctr = q + (n - 1) / 2;   // P: plate width
   const cx = ctr + (o.shift || 0), cy = ctr + (o.shift || 0);   // tree centre
   const rng = mulberry32(o.seed || 1), seed = o.seed || 1;
   const R = o.crown * n / 2, A = R * o.squash, L = Math.max(1, Math.min(3, o.maxLedge || 2));
@@ -30,6 +30,7 @@ function buildCanopyTree(mat, o) {
   const M = { EMPTY: 0, LEAF: 1, WOOD: 2 };
   const vox = new Uint8Array(N * N * (KMAX + 1));
   const inGrid = (c, r) => c >= 0 && r >= 0 && c < N && r < N;
+  const onPlate = (c, r) => c < P && r < P;
   const dark = (c, r) => c >= q && r >= q && c < q + n && r < q + n && !!mat[r - q][c - q];
   const inCode = (c, r) => c >= q && r >= q && c < q + n && r < q + n;
 
@@ -39,7 +40,7 @@ function buildCanopyTree(mat, o) {
   for (const [c, r] of trunkCells) for (let k = 1; k <= kT; k++) vox[idx(c, r, k)] = M.WOOD;
   for (const [c, r] of trunkCells) for (const [dc, dr] of [[1, 0], [-1, 0], [0, 1], [0, -1]]) {
     const c2 = c + dc, r2 = r + dr;
-    if (inGrid(c2, r2) && !vox[idx(c2, r2, 1)] && rng() < 0.4) vox[idx(c2, r2, 1)] = M.WOOD;
+    if (inGrid(c2, r2) && onPlate(c2, r2) && !vox[idx(c2, r2, 1)] && rng() < 0.4) vox[idx(c2, r2, 1)] = M.WOOD;
   }
   const nl = o.lobes, rot = o.onCanopy ? Math.PI / 4 + (rng() - 0.5) * 0.3 : rng() * Math.PI * 2;
   const clumps = [];
@@ -122,7 +123,7 @@ function buildCanopyTree(mat, o) {
     const dist = new Int16Array(N * N).fill(-1), queue = [];
     for (let r = 0; r < N; r++) for (let c = 0; c < N; c++) {
       if (!vox[idx(c, r, k)]) continue;
-      if (k === 1 || vox[idx(c, r, k - 1)]) { dist[r * N + c] = 0; queue.push(c, r); }
+      if ((k === 1 && onPlate(c, r)) || vox[idx(c, r, k - 1)]) { dist[r * N + c] = 0; queue.push(c, r); }
     }
     for (let h = 0; h < queue.length; h += 2) {
       const c = queue[h], r = queue[h + 1], d = dist[r * N + c]; if (d >= L) continue;
@@ -134,16 +135,31 @@ function buildCanopyTree(mat, o) {
     }
   }
 
+  // ---- 3b. a canopy hanging past the plate: shrink the grid to what it uses ----
+  if (N > P) {
+    let used = P;
+    for (let k = 1; k <= KMAX; k++) for (let r = 0; r < N; r++) for (let c = 0; c < N; c++) if (vox[idx(c, r, k)]) used = Math.max(used, c + 1, r + 1);
+    if (used < N) {
+      const v2 = new Uint8Array(used * used * (KMAX + 1));
+      for (let k = 0; k <= KMAX; k++) for (let r = 0; r < used; r++) for (let c = 0; c < used; c++) v2[(k * used + r) * used + c] = vox[idx(c, r, k)];
+      return buildFrom(v2, used);
+    }
+  }
+  return buildFrom(vox, N);
+
+  function buildFrom(vox, N) {
+  const idx = (c, r, k) => (k * N + r) * N + c;
   // ---- 4. paint: the top cube of every column carries one QR pixel ----
   const cubes = [], topK = new Int16Array(N * N).fill(0);
   const paint = new Map();
   for (let r = 0; r < N; r++) for (let c = 0; c < N; c++) {
     let top = 0; for (let k = KMAX; k >= 1; k--) if (vox[idx(c, r, k)]) { top = k; break; }
     topK[r * N + c] = top;
+    if (!onPlate(c, r)) { if (top) paint.set(idx(c, r, top), hash3(c, r, top, seed) < 0.45 ? 'light' : 'dark'); continue; }   // canopy past the plate: highlights like the code's
     paint.set(idx(c, r, top), inCode(c, r) && dark(c, r) ? 'dark' : 'light');
   }
   let pinkCount = 0, whiteCount = 0, woodCount = 0, kTopMax = 0;
-  for (let r = 0; r < N; r++) for (let c = 0; c < N; c++) {
+  for (let r = 0; r < P; r++) for (let c = 0; c < P; c++) {
     // plate cube: painted only where nothing stands on it
     const pc = paint.get(idx(c, r, 0)) || 'light';
     cubes.push({ c, r, k: 0, color: pc, kind: 'plate' });
@@ -162,7 +178,8 @@ function buildCanopyTree(mat, o) {
   // which code cells sit on the canopy (vs. on the plate)
   let onCanopy = 0, topMin = Infinity, topMax = 0;
   for (let r = q; r < q + n; r++) for (let c = q; c < q + n; c++) { const t = topK[r * N + c]; if (t > 0) { onCanopy++; topMin = Math.min(topMin, t); topMax = Math.max(topMax, t); } }
-  return { cubes, vox, N, n, q, KMAX, trunkCells, capTop, kTopMax, kT, topK, trimmed, unsupportedWood, limbCubes, pinkCount, whiteCount, woodCount, mixedLevels, onCanopy, topMin, topMax, maxH: L };
+  return { cubes, vox, N, P, n, q, KMAX, trunkCells, capTop, kTopMax, kT, topK, trimmed, unsupportedWood, limbCubes, pinkCount, whiteCount, woodCount, mixedLevels, onCanopy, topMin, topMax, maxH: L };
+  }
 }
 
 // Which columns have their top face in shadow, for a lamp in direction az (degrees in the plate's plane, 0 = towards

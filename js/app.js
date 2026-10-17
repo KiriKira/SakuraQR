@@ -3,7 +3,7 @@
   const LIGHTS = { blush: ['浅粉', '#FAD6E2'], petal: ['花瓣粉', '#F7C6D6'], white: ['白', '#F5F2EF'] };
   const COLORS = { brown: '#6E4A34' };
   const FIXED = { maxLedge: 2 };
-  const state = { text: '', ecc: 'Q', upper: true, mask: -1, onCanopy: false, place: 'corner', dome: 6, module: 1.5, trunk: 5, crown: 1, squash: 0.7, lobes: 4, puff: 0.85, rough: 1, ledge: '2', layout: 'one-piece', clear: 0.2, wood: 'brown', pink: 'rouge', light: 'blush', view: 'orbit', dist: 40, off: 0, lens: 'main', simLight: 'even', seedAdd: 0 };
+  const state = { text: '', ecc: 'Q', upper: true, mask: -1, onCanopy: false, place: 'centre', dome: 6, module: 1.5, trunk: 5, crown: 1, squash: 0.7, lobes: 4, puff: 0.85, rough: 1, ledge: '2', layout: 'one-piece', clear: 0.2, wood: 'brown', pink: 'rouge', light: 'blush', view: 'orbit', dist: 40, off: 0, lens: 'main', simLight: 'even', seedAdd: 0 };
   const $ = id => document.getElementById(id);
   let T = null, renderer, scanRenderer, scene, group, hemi, dirLight, sim = null, orbitCam, topCam, phoneCam, model = null, needsRender = true;
   let blockMesh = null, blockMat = null, geomTags = null;
@@ -390,7 +390,7 @@
     $('stats').innerHTML = cells.map(([v, l]) => '<div class="stat"><b>' + v + '</b><span>' + l + '</span></div>').join('');
     // what a small cube size means in practice: the trunk is two cubes thick, the peg one clearance thinner per side
     const pegW = 2 * s - 2 * state.clear;
-    $('moduleNote').textContent = '树宽约 ' + W().toFixed(0) + ' mm，树干 ' + (2 * s) + ' mm 粗' + (state.layout === 'split' ? '，榫头 ' + pegW.toFixed(1) + ' mm 见方' : '') + '。'
+    $('moduleNote').textContent = (model.N > model.P ? '底座 ' + (model.P * s).toFixed(0) + ' mm 见方，树冠伸出底座，整体约 ' : '树宽约 ') + W().toFixed(0) + ' mm，树干 ' + (2 * s) + ' mm 粗' + (state.layout === 'split' ? '，榫头 ' + pegW.toFixed(1) + ' mm 见方' : '') + '。'
       + (s < 3 ? '方块小于 3 mm 时细节只有几条线宽，建议 0.2 mm 喷嘴或 0.12 mm 层高；手机也要离得更近，大约和方块边长成正比。' : '');
     $('exportInfo').textContent = '当前模型 ' + W().toFixed(0) + ' × ' + W().toFixed(0) + ' × ' + H().toFixed(0) + ' mm，' + used.length + ' 个颜色部件。';
   }
@@ -402,7 +402,7 @@
     $('upperNote').textContent = prep.note;
     $('rowDome').hidden = !state.onCanopy; $('rowPlace').hidden = state.onCanopy;
     $('placeNote').textContent = state.place === 'corner'
-      ? '树往没有码眼的右下角挪，底座在那边加宽。台灯放在码的左上方、抬高到 60° 左右时，树冠的影子会落到码外面的底座上；掩码也会挑影子里浅色码点最少的那种。'
+      ? '树根放在底座右下角（码里唯一没有码眼的角），树冠伸出底座。台灯放在码的左上方、抬高到 45°–70° 时，树冠的影子落到底座外面；掩码也会挑影子里浅色码点最少的那种。'
       : '树在码的正中。侧面台灯的影子会落在底座的码上，最好在散光下扫。';
     $('ledgeNote').textContent = { '1': '树冠底部按 45° 台阶收进去，完全不需要支撑，树冠底面会尖一些。', '2': '每级台阶最多往外伸 2 格。树冠更圆，大多数打印机能直接打，边缘可能轻微下垂。', '3': '树冠底面最圆，但 3 格悬挑需要开启支撑。' }[state.ledge];
     const err = $('err');
@@ -415,12 +415,13 @@
     $('verInfo').textContent = '版本 ' + mi.version + ' · ' + mi.n + '×' + mi.n + ' · ' + mi.mode;
     $('maskVal').textContent = (state.mask < 0 ? '自动 · ' : '') + '第 ' + mi.mask + ' 号';
 
-    // 'corner': the tree sits towards the code's bottom-right corner, the one without a finder pattern, and the plate
-    // grows on that side, so a lamp off the top-left corner throws the canopy's shadow past the code
-    const shift = state.place === 'corner' && !state.onCanopy ? Math.round(0.24 * mi.n) : 0;
+    // 'corner': the trunk stands in the plate's bottom-right corner (the code's corner without a finder pattern), its
+    // outer edge one cell in, and the canopy hangs past the plate, so a lamp off the top-left corner throws the
+    // canopy's shadow past the code
+    const corner = state.place === 'corner' && !state.onCanopy, shift = corner ? (mi.n + 1) / 2 : 0;
     const opts = Object.assign({}, FIXED, {
       crown: state.onCanopy ? state.crown * 1.45 : state.crown, squash: state.squash, trunk: state.trunk, lobes: state.lobes, rough: state.rough, puff: state.puff,
-      quiet: state.onCanopy ? 5 : 3, onCanopy: state.onCanopy, dome: state.dome, capDepth: 4, shift, pad: shift,
+      quiet: state.onCanopy ? 5 : 3, onCanopy: state.onCanopy, dome: state.dome, capDepth: 4, shift, over: corner ? Math.ceil(0.6 * mi.n) : 0,
       maxLedge: parseInt(state.ledge, 10), seed: strSeed(state.encoded) + state.seedAdd * 7919
     });
     model = buildCanopyTree(mi.mat, opts);
