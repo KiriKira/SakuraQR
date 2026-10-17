@@ -3,7 +3,7 @@
   const LIGHTS = { blush: ['浅粉', '#FAD6E2'], petal: ['花瓣粉', '#F7C6D6'], white: ['白', '#F5F2EF'] };
   const COLORS = { brown: '#6E4A34' };
   const FIXED = { maxLedge: 2 };
-  const state = { text: '', ecc: 'Q', upper: true, mask: -1, onCanopy: false, dome: 6, module: 1.5, trunk: 5, crown: 1, squash: 0.7, lobes: 4, puff: 0.85, rough: 1, ledge: '2', layout: 'one-piece', clear: 0.2, wood: 'brown', pink: 'rouge', light: 'blush', view: 'orbit', dist: 40, off: 0, lens: 'main', simLight: 'even', seedAdd: 0 };
+  const state = { text: '', ecc: 'Q', upper: true, mask: -1, onCanopy: false, place: 'corner', dome: 6, module: 1.5, trunk: 5, crown: 1, squash: 0.7, lobes: 4, puff: 0.85, rough: 1, ledge: '2', layout: 'one-piece', clear: 0.2, wood: 'brown', pink: 'rouge', light: 'blush', view: 'orbit', dist: 40, off: 0, lens: 'main', simLight: 'even', seedAdd: 0 };
   const $ = id => document.getElementById(id);
   let T = null, renderer, scanRenderer, scene, group, hemi, dirLight, sim = null, orbitCam, topCam, phoneCam, model = null, needsRender = true;
   let blockMesh = null, blockMat = null, geomTags = null;
@@ -38,7 +38,7 @@
     upd();
     el.addEventListener('input', () => { upd(); full ? schedule() : scheduleScan(true); });
   }
-  bindSeg('ecc', 'ecc'); bindSeg('ledge', 'ledge'); bindSeg('layout', 'layout', () => { updateLayout(); updateStats(); }); bindSeg('wood', 'wood', () => applyColors()); bindSeg('lens', 'lens', () => { scanSoon(); sweepSoon(); }); bindSeg('simlight', 'simLight', () => { scanSoon(); sweepSoon(); });
+  bindSeg('ecc', 'ecc'); bindSeg('ledge', 'ledge'); bindSeg('place', 'place'); bindSeg('layout', 'layout', () => { updateLayout(); updateStats(); }); bindSeg('wood', 'wood', () => applyColors()); bindSeg('lens', 'lens', () => { scanSoon(); sweepSoon(); }); bindSeg('simlight', 'simLight', () => { scanSoon(); sweepSoon(); });
   bindRange('module', 'module', v => v + ' mm');
   bindRange('trunk', 'trunk', v => v + ' 格');
   bindRange('crown', 'crown', v => Math.round(v * 100) + '%');
@@ -111,7 +111,7 @@
     if (state.mask >= 0) pick = cands.find(x => x.mask === state.mask);
     else { pick = cands[0]; let best = Infinity; for (const x of cands) { const s = lonely(x.matrix); if (s < best) { best = s; pick = x; } } }
     const mode = QR.isAlnum(text) ? '字母数字模式' : '字节模式';
-    return { mat: pick.matrix, n: pick.n, version: pick.version, mask: pick.mask, mode, bytes: new TextEncoder().encode(text).length };
+    return { mat: pick.matrix, n: pick.n, version: pick.version, mask: pick.mask, mode, bytes: new TextEncoder().encode(text).length, cands };
   }
 
   // ---------- voxel mesh (only faces that touch air) ----------
@@ -224,11 +224,13 @@
     el.addEventListener('pointerup', up); el.addEventListener('pointercancel', up);
     el.addEventListener('wheel', e => { if (state.view !== 'orbit') return; e.preventDefault(); orbit.radius = clampR(orbit.radius * (1 + e.deltaY * 0.0012)); needsRender = true; }, { passive: false });
   }
+  // the code's centre, from the plate's centre (mm, same along x and z): off centre when the tree is shifted
+  const codeAt = () => (model.q + model.n / 2 - model.N / 2) * S();
   function placePhone(cam, aspect, dist) {
-    const D = dist || state.dist * 10, off = state.off;
+    const D = dist || state.dist * 10, off = state.off, c0 = codeAt(), half = (model.n / 2 + model.q) * S();
     cam.aspect = aspect;
-    cam.fov = 2 * Math.atan(((W() / 2 + off) / 0.85) / D) * 180 / Math.PI / Math.min(1, aspect);
-    cam.position.set(off, D, 0); cam.up.set(0, 0, -1); cam.lookAt(off, 0, 0); cam.updateProjectionMatrix();
+    cam.fov = 2 * Math.atan(((half + off) / 0.85) / D) * 180 / Math.PI / Math.min(1, aspect);
+    cam.position.set(c0 + off, D, c0); cam.up.set(0, 0, -1); cam.lookAt(c0 + off, 0, c0); cam.updateProjectionMatrix();
   }
   function placeTop(cam, aspect, margin) {
     const half = W() / 2 * margin;
@@ -259,24 +261,28 @@
   const LENSES = { main: ['主摄', 72], x2: ['2×', 40], x3: ['3×', 26] }, FRAME_W = 1920, FRAME_H = 1440;
   const work = document.createElement('canvas');
   const wctx = work.getContext('2d', { willReadFrequently: true });
-  // Light for the simulated shot: 'even' soft room light; 'lamp' a desk lamp about 40 cm away, low (30°) from the
-  // left, with shadows; 'glare' a ceiling light just behind the phone over slightly glossy filament, so flat tops can
-  // throw a highlight into the camera.
-  const SIM_LIGHTS = { even: '均匀散光', lamp: '侧面台灯', glare: '顶灯反光' }, LAMP = [-350, 200, -60];   // mm from the tree
-  // The lamp is the scene's directional light moved low to the left: from 40 cm away its rays over a few
-  // centimetres of tree are nearly parallel.
+  // Light for the simulated shot: 'even' soft room light; 'lamp' a desk lamp where we recommend it, off the code's
+  // top-left corner and 60° up, so the canopy's shadow falls past the code's bottom-right corner (see place); 'side' a
+  // low lamp (30°) from the left; both with hard shadows. 'glare' a ceiling light just behind the phone over slightly
+  // glossy filament, so flat tops can throw a highlight into the camera.
+  const SIM_LIGHTS = { even: '均匀散光', lamp: '左上方台灯', side: '低角度侧灯', glare: '顶灯反光' };
+  const LAMP_AT = { lamp: [225, 60], side: [190, 30] };   // [azimuth over the plate (0 = right, 90 = down the code), elevation], degrees
+  const lampPos = ([az, el]) => { const a = az * Math.PI / 180, e = el * Math.PI / 180; return [400 * Math.cos(e) * Math.cos(a), 400 * Math.sin(e), 400 * Math.cos(e) * Math.sin(a)]; };
+  // The lamp is the scene's directional light moved: from 40 cm away its rays over a few centimetres of tree are
+  // nearly parallel.
   function simRender(cam) {
     const mode = state.simLight, { bulb, gloss } = sim, keep = [hemi.intensity, dirLight.intensity, dirLight.position.clone(), blockMesh.material];
-    bulb.visible = mode === 'glare'; dirLight.castShadow = mode === 'lamp';
-    if (mode === 'lamp') {   // exposed like a phone would: lit tops at full brightness, shadows at 40 % of that
-      const L = LAMP, e = Math.atan2(L[1], Math.hypot(L[0], L[2]));
-      hemi.intensity = 0.4; dirLight.intensity = 0.6 / Math.sin(e); dirLight.position.set(L[0], L[1], L[2]);
+    const lamp = LAMP_AT[mode];
+    bulb.visible = mode === 'glare'; dirLight.castShadow = !!lamp;
+    if (lamp) {   // exposed like a phone would: lit tops at full brightness, shadows at 40 % of that
+      const L = lampPos(lamp);
+      hemi.intensity = 0.4; dirLight.intensity = 0.6 / Math.sin(lamp[1] * Math.PI / 180); dirLight.position.set(L[0], L[1], L[2]);
     }
     else if (mode === 'glare') {
       hemi.intensity = 0.42; dirLight.intensity = 0; blockMesh.material = gloss;
       bulb.position.set(cam.position.x + 60, cam.position.y + 150, cam.position.z + 40);
     }
-    scanRenderer.shadowMap.enabled = mode === 'lamp'; scanRenderer.shadowMap.needsUpdate = true;
+    scanRenderer.shadowMap.enabled = !!lamp; scanRenderer.shadowMap.needsUpdate = true;
     scanRenderer.render(scene, cam);
     hemi.intensity = keep[0]; dirLight.intensity = keep[1]; dirLight.position.copy(keep[2]); blockMesh.material = keep[3];
     bulb.visible = false; dirLight.castShadow = true;
@@ -322,13 +328,13 @@
   function scanSoon() { scheduleScan(true); }
   // worst misregistration (in modules) between each visible blossom and its own code cell, seen from the phone
   function misregistration() {
-    const s = S(), N = model.N, D = state.dist * 10, ox = state.off; let worst = 0;
+    const s = S(), N = model.N, D = state.dist * 10, c0 = codeAt(), ox = c0 + state.off; let worst = 0;
     const tf = model.topK[model.q * N + model.q], zr = tf > 0 ? (tf + 1) * s : s;
     for (let r = 0; r < N; r++) for (let c = 0; c < N; c++) {
       if (model.topK[r * N + c] <= 0 || c < model.q || r < model.q || c >= model.q + model.n || r >= model.q + model.n) continue;
       const zTop = (model.topK[r * N + c] + 1) * s, k = (D - zr) / (D - zTop);
       const cx = (c + 0.5 - N / 2) * s, cy = (r + 0.5 - N / 2) * s;
-      const px = ox + (cx - ox) * k, py = cy * k;
+      const px = ox + (cx - ox) * k, py = c0 + (cy - c0) * k;
       worst = Math.max(worst, Math.hypot(px - cx, py - cy) / s);
     }
     return worst;
@@ -351,7 +357,9 @@
     let msg;
     if (ok2) msg = '解码结果：<span class="mono">' + escapeHTML(r2.data) + '</span>';
     else if (!ok1) msg = '连正俯视都扫不出，多半是花色和白色太接近。换深一点的花色试试。';
-    else if (state.simLight === 'lamp') msg = '侧面台灯的硬阴影会把一片码点压暗，解码器分不清深浅。码分在树冠和底座上时，树冠的影子正好落在底座的码上，台灯从哪个角度照都扫不出；换成窗边或顶灯这类散光再扫。';
+    else if (LAMP_AT[state.simLight]) msg = '台灯的硬阴影会把一片浅色码点压暗，解码器把它们当成深色。' + (state.place === 'corner' && !state.onCanopy
+      ? '台灯要放在码的左上方（三个码眼里，和空着的那个角相对的那一个的方向），并且抬高到 60° 左右，树冠的影子才会落到右下角码外面的底座上。'
+      : '把“树的位置”切到“偏右下”，再把台灯放在码的左上方、抬高到 60° 左右；或者换成窗边、顶灯这类散光。');
     else if (state.simLight === 'glare') msg = '光面耗材在顶灯下整片反光，深浅两种粉的对比被冲淡。换个角度避开反光，或用哑光耗材。（浏览器里的 jsQR 对反光比手机扫码软件更敏感。）';
     else if (mis >= 0.3) msg = '码点之间最大高差约 ' + span + ' cm，手机离得近时高处的码点被透视放大，错开约 ' + mis.toFixed(1) + ' 格。把手机拉高；或打开“整个码放在树冠顶上”，减小顶面拱起。';
     else msg = '几何上已基本对齐，失败多半来自偏离中心或颜色对比。把偏移调回 0，或换深一点的花色。';
@@ -374,6 +382,7 @@
       ['<span class="mono">' + W().toFixed(0) + ' × ' + W().toFixed(0) + ' × ' + H().toFixed(0) + '</span>', '成品尺寸 mm'],
       ['<span class="palette">' + used.map(c => '<i style="background:' + c[1] + '" title="' + c[0] + '"></i>').join('') + '&nbsp;' + used.length + ' 色</span>', used.map(c => c[0]).join(' · ')],
       [model.onCanopy + ' / ' + (model.n * model.n), '码点落在树冠顶上 / 全部码点' + (model.onCanopy === model.n * model.n ? '' : '（其余印在底座上）')],
+      [model.inShadow + ' 个', '台灯在左上方 60° 时，被树冠影子压暗的浅色码点（会被当成深色）'],
       [model.trimmed + ' 块', '为免支撑削掉的悬空花块 · ' + ledgeText],
       ['~' + swaps + ' 次', '换色次数（0.2 mm 层高，单喷头）'],
       ['~' + Math.round(swaps * 0.3) + ' g · ' + (swaps * 50 / 3600).toFixed(1) + ' h', 'AMS 冲刷废料与额外耗时（粗估）；双喷头约为 0']
@@ -391,7 +400,10 @@
     const prep = prepareText(state.text);
     state.encoded = prep.text;
     $('upperNote').textContent = prep.note;
-    $('rowDome').hidden = !state.onCanopy;
+    $('rowDome').hidden = !state.onCanopy; $('rowPlace').hidden = state.onCanopy;
+    $('placeNote').textContent = state.place === 'corner'
+      ? '树往没有码眼的右下角挪，底座在那边加宽。台灯放在码的左上方、抬高到 60° 左右时，树冠的影子会落到码外面的底座上；掩码也会挑影子里浅色码点最少的那种。'
+      : '树在码的正中。侧面台灯的影子会落在底座的码上，最好在散光下扫。';
     $('ledgeNote').textContent = { '1': '树冠底部按 45° 台阶收进去，完全不需要支撑，树冠底面会尖一些。', '2': '每级台阶最多往外伸 2 格。树冠更圆，大多数打印机能直接打，边缘可能轻微下垂。', '3': '树冠底面最圆，但 3 格悬挑需要开启支撑。' }[state.ledge];
     const err = $('err');
     if (!state.text) { err.textContent = '先输入一些文字。'; err.hidden = false; return; }
@@ -403,11 +415,25 @@
     $('verInfo').textContent = '版本 ' + mi.version + ' · ' + mi.n + '×' + mi.n + ' · ' + mi.mode;
     $('maskVal').textContent = (state.mask < 0 ? '自动 · ' : '') + '第 ' + mi.mask + ' 号';
 
-    model = buildCanopyTree(mi.mat, Object.assign({}, FIXED, {
+    // 'corner': the tree sits towards the code's bottom-right corner, the one without a finder pattern, and the plate
+    // grows on that side, so a lamp off the top-left corner throws the canopy's shadow past the code
+    const shift = state.place === 'corner' && !state.onCanopy ? Math.round(0.24 * mi.n) : 0;
+    const opts = Object.assign({}, FIXED, {
       crown: state.onCanopy ? state.crown * 1.45 : state.crown, squash: state.squash, trunk: state.trunk, lobes: state.lobes, rough: state.rough, puff: state.puff,
-      quiet: state.onCanopy ? 5 : 3, onCanopy: state.onCanopy, dome: state.dome, capDepth: 4,
+      quiet: state.onCanopy ? 5 : 3, onCanopy: state.onCanopy, dome: state.dome, capDepth: 4, shift, pad: shift,
       maxLedge: parseInt(state.ledge, 10), seed: strSeed(state.encoded) + state.seedAdd * 7919
-    }));
+    });
+    model = buildCanopyTree(mi.mat, opts);
+    // automatic mask: the tree's shape does not depend on the pattern, so pick the pattern that leaves the fewest light
+    // modules in the recommended lamp's shadow (ties: fewest lonely pixels), and paint that one
+    const lampShade = shadowedTops(model, LAMP_AT.lamp[0], LAMP_AT.lamp[1]);
+    if (state.mask < 0) {
+      let best = null, bs = Infinity;
+      for (const x of mi.cands) { const sc = shadowedLight(model, lampShade, x.matrix) * 1000 + lonely(x.matrix); if (sc < bs) { bs = sc; best = x; } }
+      if (best.mask !== mi.mask) { mi.mat = best.matrix; mi.mask = best.mask; model = buildCanopyTree(mi.mat, opts); }
+      $('maskVal').textContent = '自动 · 第 ' + mi.mask + ' 号';
+    }
+    model.inShadow = shadowedLight(model, lampShade, mi.mat);
     while (group.children.length) { const c = group.children[0]; group.remove(c); if (c.geometry) c.geometry.dispose(); }
     blockMesh = new T.Mesh(buildBlocks(model), blockMat); blockMesh.castShadow = true; blockMesh.receiveShadow = true;
     group.add(blockMesh);
