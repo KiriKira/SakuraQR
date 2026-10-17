@@ -3,7 +3,7 @@
   const LIGHTS = { blush: ['浅粉', '#FAD6E2'], petal: ['花瓣粉', '#F7C6D6'], white: ['白', '#F5F2EF'] };
   const COLORS = { brown: '#6E4A34' };
   const FIXED = { maxLedge: 2 };
-  const state = { text: '', ecc: 'Q', upper: true, mask: -1, onCanopy: false, place: 'centre', dome: 6, module: 1.5, trunk: 5, crown: 1, squash: 0.7, lobes: 4, puff: 0.85, rough: 1, ledge: '2', layout: 'one-piece', clear: 0.2, wood: 'brown', pink: 'rouge', light: 'blush', view: 'orbit', dist: 40, off: 0, lens: 'main', simLight: 'even', seedAdd: 0 };
+  const state = { text: '', ecc: 'Q', upper: true, mask: -1, onCanopy: false, place: 'centre', persp: true, perspDist: 80, dome: 6, module: 1.5, trunk: 5, crown: 1, squash: 0.7, lobes: 4, puff: 0.85, rough: 1, ledge: '2', layout: 'one-piece', clear: 0.2, wood: 'brown', pink: 'rouge', light: 'blush', view: 'orbit', dist: 40, off: 0, lens: 'main', simLight: 'even', seedAdd: 0 };
   const $ = id => document.getElementById(id);
   let T = null, renderer, scanRenderer, scene, group, hemi, dirLight, sim = null, orbitCam, topCam, phoneCam, model = null, needsRender = true;
   let blockMesh = null, blockMat = null, geomTags = null;
@@ -47,6 +47,8 @@
   bindRange('rough', 'rough', v => v.toFixed(2));
   bindRange('puff', 'puff', v => v.toFixed(2));
   bindRange('dome', 'dome', v => v + ' 格');
+  bindRange('perspDist', 'perspDist', v => v + ' cm');
+  $('persp').addEventListener('change', e => { state.persp = e.target.checked; schedule(); });
   bindRange('mask', 'mask', v => v < 0 ? '自动' : '第 ' + v + ' 号');
   $('upper').addEventListener('change', e => { state.upper = e.target.checked; schedule(); });
   $('oncanopy').addEventListener('change', e => { state.onCanopy = e.target.checked; schedule(); });
@@ -126,7 +128,7 @@
     { n: [0, 0, -1], q: [[0, 0, 0], [1, 0, 0], [1, 1, 0], [0, 1, 0]] }  // -row
   ];
   function buildBlocks(m) {
-    const s = S(), N = m.N, off = -N * s / 2, pos = [], nor = [], col = [], tags = [];
+    const s = S(), N = m.N, off = -N * s / 2, pos = [], nor = [], col = [], tags = [], warp = m.warp || ((c, r, k) => [c, r, k]);
     const idx = (c, r, k) => (k * N + r) * N + c;
     const filled = (c, r, k) => c >= 0 && r >= 0 && c < N && r < N && k >= 0 && (k === 0 || (k <= m.KMAX && m.vox[idx(c, r, k)] !== 0));
     for (const cb of m.cubes) {
@@ -134,7 +136,7 @@
       const tagv = cb.color === 'dark' ? sh : cb.color === 'wood' ? 10 + sh : (cb.kind === 'plate' ? -1 : 20 + sh);
       for (const F of FACES) {
         if (filled(cb.c + F.n[0], cb.r + F.n[2], cb.k + F.n[1])) continue;
-        const quad = F.q.map(([x, y, z]) => [off + (cb.c + x) * s, (cb.k + y) * s, off + (cb.r + z) * s]);
+        const quad = F.q.map(([x, y, z]) => { const w = warp(cb.c + x, cb.r + z, cb.k + y); return [off + w[0] * s, w[2] * s, off + w[1] * s]; });
         for (const p of [quad[0], quad[1], quad[2], quad[0], quad[2], quad[3]]) { pos.push(p[0], p[1], p[2]); nor.push(F.n[0], F.n[1], F.n[2]); col.push(1, 1, 1); tags.push(tagv); }
       }
     }
@@ -326,16 +328,21 @@
     setTimeout(step, 0);
   }
   function scanSoon() { scheduleScan(true); }
-  // worst misregistration (in modules) between each visible blossom and its own code cell, seen from the phone
+  // worst misregistration (in modules) between each visible top face and its own code cell, seen from the phone: the
+  // decoder fits the grid to the three finder patterns, so compare with the grid through their centres
   function misregistration() {
-    const s = S(), N = model.N, D = state.dist * 10, c0 = codeAt(), ox = c0 + state.off; let worst = 0;
-    const tf = model.topK[model.q * N + model.q], zr = tf > 0 ? (tf + 1) * s : s;
-    for (let r = 0; r < N; r++) for (let c = 0; c < N; c++) {
-      if (model.topK[r * N + c] <= 0 || c < model.q || r < model.q || c >= model.q + model.n || r >= model.q + model.n) continue;
-      const zTop = (model.topK[r * N + c] + 1) * s, k = (D - zr) / (D - zTop);
-      const cx = (c + 0.5 - N / 2) * s, cy = (r + 0.5 - N / 2) * s;
-      const px = ox + (cx - ox) * k, py = c0 + (cy - c0) * k;
-      worst = Math.max(worst, Math.hypot(px - cx, py - cy) / s);
+    const s = S(), N = model.N, q = model.q, n = model.n, D = state.dist * 10, c0 = codeAt(), ox = c0 + state.off;
+    const w = model.warp || ((c, r, k) => [c, r, k]);
+    const seen = (c, r) => {   // where the middle of column (c, r)'s top face appears, projected onto the plate's top (mm)
+      const k = model.topK[r * N + c] + 1, p = w(c + 0.5, r + 0.5, k), t = (D - s) / (D - k * s);
+      return [ox + ((p[0] - N / 2) * s - ox) * t, c0 + ((p[1] - N / 2) * s - c0) * t];
+    };
+    const a = seen(q + 3, q + 3), b = seen(q + n - 4, q + 3), d = seen(q + 3, q + n - 4), L = n - 7;
+    const ex = [(b[0] - a[0]) / L, (b[1] - a[1]) / L], ey = [(d[0] - a[0]) / L, (d[1] - a[1]) / L], unit = Math.hypot(...ex);
+    let worst = 0;
+    for (let r = q; r < q + n; r++) for (let c = q; c < q + n; c++) {
+      const p = seen(c, r), u = c - q - 3, v = r - q - 3;
+      worst = Math.max(worst, Math.hypot(p[0] - (a[0] + u * ex[0] + v * ey[0]), p[1] - (a[1] + u * ex[1] + v * ey[1])) / unit);
     }
     return worst;
   }
@@ -344,24 +351,27 @@
   function runScan() {
     if (!model) return;
     const target = state.encoded;
-    const oc = new T.OrthographicCamera(-1, 1, 1, -1, 1, 20000); placeTop(oc, 1, 1.15);
-    const r1 = decodeWith(oc, 480);
+    // the ideal view: straight down from infinitely far, or with perspective compensation from the design distance
+    let ic;
+    if (model.warp) { ic = new T.PerspectiveCamera(40, 1, 1, 20000); placePhone(ic, 1, state.perspDist * 10); }
+    else { ic = new T.OrthographicCamera(-1, 1, 1, -1, 1, 20000); placeTop(ic, 1, 1.15); }
+    const r1 = decodeWith(ic, 480), ideal = model.warp ? '设计机位' : '正俯视';
     const r2 = phoneShot(state.dist * 10, state.lens);
     $('scanThumb').getContext('2d').drawImage(scanRenderer.domElement, 0, 0, 224, 224);
     const ok1 = !!r1 && r1.data === target, ok2 = !!r2 && r2.data === target;
-    setChip('chipOrtho', ok1 ? 'ok' : 'bad', ok1 ? '正俯视 可识别' : '正俯视 失败');
+    setChip('chipOrtho', ok1 ? 'ok' : 'bad', ideal + (ok1 ? ' 可识别' : ' 失败'));
     setChip('chipPhone', ok2 ? 'ok' : 'bad', '手机' + (state.lens === 'main' ? '' : ' ' + LENSES[state.lens][0]) + ' ' + (state.dist / 100).toFixed(1) + ' m ' + (ok2 ? '可识别' : '失败'));
     const mis = misregistration();
     setChip('chipPara', mis < 0.3 ? 'ok' : mis < 0.5 ? 'warn' : 'bad', '错位 ' + mis.toFixed(2) + ' 格');
     const span = ((model.topMax - model.topMin) * S() / 10).toFixed(1);
     let msg;
     if (ok2) msg = '解码结果：<span class="mono">' + escapeHTML(r2.data) + '</span>';
-    else if (!ok1) msg = '连正俯视都扫不出，多半是花色和白色太接近。换深一点的花色试试。';
+    else if (!ok1) msg = '连' + ideal + '都扫不出，多半是花色和白色太接近。换深一点的花色试试。';
     else if (LAMP_AT[state.simLight]) msg = '台灯的硬阴影会把一片浅色码点压暗，解码器把它们当成深色。' + (state.place === 'corner' && !state.onCanopy
       ? '台灯要放在码的左上方（三个码眼里，和空着的那个角相对的那一个的方向），并且抬高到 60° 左右，树冠的影子才会落到右下角码外面的底座上。'
       : '把“树的位置”切到“偏右下”，再把台灯放在码的左上方、抬高到 60° 左右；或者换成窗边、顶灯这类散光。');
     else if (state.simLight === 'glare') msg = '光面耗材在顶灯下整片反光，深浅两种粉的对比被冲淡。换个角度避开反光，或用哑光耗材。（浏览器里的 jsQR 对反光比手机扫码软件更敏感。）';
-    else if (mis >= 0.3) msg = '码点之间最大高差约 ' + span + ' cm，手机离得近时高处的码点被透视放大，错开约 ' + mis.toFixed(1) + ' 格。把手机拉高；或打开“整个码放在树冠顶上”，减小顶面拱起。';
+    else if (mis >= 0.3) msg = '码点之间最大高差约 ' + span + ' cm，手机' + (state.persp ? '离透视补偿的设计距离（' + state.perspDist + ' cm）太远或太近，或者没对准码的中心' : '离得近时高处的码点被透视放大') + '，错开约 ' + mis.toFixed(1) + ' 格。' + (state.persp ? '把手机挪到设计距离附近、对准码的中心。' : '把手机拉高；或打开“透视补偿”。');
     else msg = '几何上已基本对齐，失败多半来自偏离中心或颜色对比。把偏移调回 0，或换深一点的花色。';
     $('scanMsg').innerHTML = msg;
   }
@@ -435,6 +445,8 @@
       $('maskVal').textContent = '自动 · 第 ' + mi.mask + ' 号';
     }
     model.inShadow = shadowedLight(model, lampShade, mi.mat);
+    model.warp = state.persp ? perspectiveWarp(model, S(), state.perspDist * 10) : null;
+    $('rowPerspDist').hidden = !state.persp;
     while (group.children.length) { const c = group.children[0]; group.remove(c); if (c.geometry) c.geometry.dispose(); }
     blockMesh = new T.Mesh(buildBlocks(model), blockMat); blockMesh.castShadow = true; blockMesh.receiveShadow = true;
     group.add(blockMesh);
@@ -465,7 +477,7 @@
     };
   }
   function exportParts() {
-    return SakuraExport.buildParts(model, S(), exportColours(), state.wood === 'brown' ? null : { wood: 'light' }, { layout: state.layout, clear: state.clear });
+    return SakuraExport.buildParts(model, S(), exportColours(), state.wood === 'brown' ? null : { wood: 'light' }, { layout: state.layout, clear: state.clear, warp: model.warp });
   }
   function baseName() {
     const host = (state.encoded || 'sakura').replace(/^[a-z][a-z0-9+.-]*:\/\//i, '').replace(/[^A-Za-z0-9._-]+/g, '-').replace(/^-+|-+$/g, '').toLowerCase();

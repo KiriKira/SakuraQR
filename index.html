@@ -203,6 +203,12 @@ input[type=range] { width: 100%; accent-color: var(--accent); }
           <div class="rowhead"><span class="label">顶面拱起</span><span class="mono" id="domeVal">6 格</span></div>
           <input type="range" id="dome" min="0" max="10" step="1" value="6">
         </div>
+        <label class="toggle"><input type="checkbox" id="persp" checked> 透视补偿（每层方块按高度往码中心缩一点，从设计距离正上方看，高处的码点和底座的码点对齐）</label>
+        <div class="row" id="rowPerspDist">
+          <div class="rowhead"><span class="label">设计距离</span><span class="mono" id="perspDistVal">80 cm</span></div>
+          <input type="range" id="perspDist" min="20" max="150" step="5" value="80">
+          <p class="sub">手机在这个高度正对码中心时完全对齐；近到它的一半、远到无穷远，错位都不超过不补偿时在这个高度的错位。设得太近，远处码点只剩几个像素时容错不够，反而扫不出；模拟里 80 cm 在各个距离都不比不补偿差。</p>
+        </div>
         <div class="row" id="rowPlace">
           <span class="label">树的位置</span>
           <div class="seg" id="place">

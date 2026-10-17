@@ -55,24 +55,26 @@ const SakuraExport = (function () {
 
   // parts = [{ key, name, hex, verts, tris, object }], object 'tree' or 'base'.
   // `merge` maps a colour onto another (e.g. wood -> light for 2 colours).
-  // opt = { layout: 'one-piece' | 'split', clear: peg clearance per side (mm), gap: tree-to-base spacing (mm) }
+  // opt = { layout: 'one-piece' | 'split', clear: peg clearance per side (mm), gap: tree-to-base spacing (mm),
+  //         warp: optional map of the model's cube corners (c, r, k) to moved ones, e.g. perspectiveWarp }
   function buildParts(model, s, colours, merge, options) {
     const opt = Object.assign({ layout: 'one-piece', clear: 0.2, gap: 6, baseName: '底座' }, options);
     const { N, KMAX, kTopMax: T } = model, keys = PART_ORDER.filter(k => !(merge && merge[k]));
     const id = name => ID[(merge && merge[name]) || name];
+    const wp = opt.warp || ((c, r, k) => [c, r, k]);   // warps keep k
     const parts = (cells, place, object, suffix) => keys.map(k => Object.assign({ key: k, object }, colours[k], suffix ? { name: colours[k].name + suffix } : null, shell(cells, ID[k], s, place)))
       .filter(p => p.tris.length);
     if (opt.layout !== 'split') {
       const cells = cellGrid(N, KMAX + 1);
       for (const cb of model.cubes) cells.set(cb.c, cb.r, cb.k, id(cb.color));
-      return parts(cells, (c, r, k) => [c, N - r, k], 'tree');
+      return parts(cells, (c, r, k) => { const w = wp(c, r, k); return [w[0], N - w[1], k]; }, 'tree');
     }
     const trunk = new Set(model.trunkCells.map(([c, r]) => c + ',' + r)), isTrunk = cb => trunk.has(cb.c + ',' + cb.r);
     const root = cb => cb.k === 1 && cb.kind === 'wood' && !isTrunk(cb);
     // tree, upside down: level k prints at height T - k; Y runs the other way, so this is a turn, not a mirror
     const tree = cellGrid(N, T);
     for (const cb of model.cubes) if (cb.k >= 1 && !root(cb)) tree.set(cb.c, cb.r, T - cb.k, id(cb.color));
-    const out = parts(tree, (c, r, k) => [c, r, k], 'tree');
+    const out = parts(tree, (c, r, k) => { const w = wp(c, r, T + 1 - k); return [w[0], w[1], k]; }, 'tree');
     // peg: the trunk's end, `clear` thinner on every side, 0.4 mm shorter than the socket is deep
     const c0 = Math.min(...model.trunkCells.map(t => t[0])), r0 = Math.min(...model.trunkCells.map(t => t[1]));
     const peg = box(c0 * s + opt.clear, r0 * s + opt.clear, T * s, (c0 + 2) * s - opt.clear, (r0 + 2) * s - opt.clear, T * s + 2 * s - 0.4);
@@ -84,7 +86,7 @@ const SakuraExport = (function () {
       if (cb.k === 0 && !isTrunk(cb)) { base.set(cb.c, cb.r, 0, id('light')); base.set(cb.c, cb.r, 1, id(cb.color)); }
       if (root(cb)) base.set(cb.c, cb.r, 2, id(cb.color));
     }
-    return out.concat(parts(base, (c, r, k) => [x0 + c, N - r, k], 'base', ' · ' + opt.baseName));
+    return out.concat(parts(base, (c, r, k) => { const w = wp(c, r, k - 1); return [x0 + w[0], N - w[1], k]; }, 'base', ' · ' + opt.baseName));
   }
 
   // ---- binary STL ----

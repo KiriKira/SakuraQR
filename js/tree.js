@@ -182,6 +182,15 @@ function buildCanopyTree(mat, o) {
   }
 }
 
+// Perspective compensation: cubes need not all be the same size. Shrink every level towards the code's centre as a
+// camera D0 mm above the bed (straight over the code) sees it shrink, so each column becomes a thin frustum pointing
+// at that camera, its side walls edge-on. From there every top face lands on its own cell of the plate's grid, as if
+// the code were flat. Returns a map of grid corners (c, r, k in cubes; the plate's top is k = 1) to warped ones.
+function perspectiveWarp(m, s, D0) {
+  const H = D0 / s, cc = m.q + m.n / 2;
+  return (c, r, k) => { const f = (H - k) / (H - 1); return [cc + (c - cc) * f, cc + (r - cc) * f, k]; };
+}
+
 // Which columns have their top face in shadow, for a lamp in direction az (degrees in the plate's plane, 0 = towards
 // +c, 90 = towards +r, so 225 = the code's top-left) at elevation el: march from the middle of each top face
 // towards the lamp and see whether it runs into a cube.
@@ -210,4 +219,4 @@ function shadowedLight(m, sh, mat) {
 function canopyBoxes(m, s) {
   return m.cubes.map(cb => ({ x0: (cb.c - m.N / 2) * s, x1: (cb.c + 1 - m.N / 2) * s, y0: (cb.r - m.N / 2) * s, y1: (cb.r + 1 - m.N / 2) * s, z0: cb.k * s, z1: (cb.k + 1) * s, color: cb.color, kind: cb.kind }));
 }
-if (typeof module !== 'undefined') module.exports = { buildCanopyTree, canopyBoxes, strSeed, shadowedTops, shadowedLight };
+if (typeof module !== 'undefined') module.exports = { buildCanopyTree, canopyBoxes, strSeed, shadowedTops, shadowedLight, perspectiveWarp };
