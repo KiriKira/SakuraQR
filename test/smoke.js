@@ -1,6 +1,7 @@
 // Smoke test, no dependencies: node test/smoke.js [outDir]
 // Encodes a URL, grows the tree, exports 3MF + STL zip in both layouts (one piece; tree upside down + separate base),
-// checks every part is a closed shell and the peg fits the socket, and writes the top view as a PPM image so a
+// checks every part is a closed 2-manifold (every edge on exactly two faces, one fan round every vertex, also after
+// welding vertices by position as STL readers do) and the peg fits the socket, and writes the top view as a PPM image so a
 // decoder can confirm it scans.
 const fs = require('fs'), path = require('path');
 const QR = require('../js/qr.js');
@@ -26,8 +27,8 @@ for (const [label, merge] of [['3 colours', null], ['2 colours', { wood: 'light'
   console.log(label + ':');
   for (const p of parts) {
     const a = SakuraExport.audit(p);
-    console.log('  ' + p.key.padEnd(6), String(a.triangles).padStart(6), 'triangles, open edges', a.open, ', edges shared by >2 faces', a.nonManifold);
-    if (a.open) fail('open edges in the ' + p.key + ' shell');
+    console.log('  ' + p.key.padEnd(6), String(a.triangles).padStart(6), 'triangles, open edges', a.open, ', edges shared by >2 faces', a.nonManifold, ', vertices not on one fan', a.badVerts);
+    if (a.open || a.nonManifold || a.badVerts) fail('the ' + p.key + ' shell is not a closed 2-manifold');
   }
   const tag = merge ? '2c' : '3c';
   fs.writeFileSync(path.join(out, 'sakura-' + tag + '.3mf'), SakuraExport.to3MF(parts, 'SakuraQR ' + text));
@@ -45,14 +46,14 @@ for (const [onCanopy, s, shift] of [[true, 4, 0], [false, 4, 0], [false, 1.5, 0]
   console.log('split, ' + s + ' mm cubes, code ' + (onCanopy ? 'on the canopy' : 'on canopy and base') + (shift ? ', tree shifted ' + shift : '') + ':');
   for (const p of parts) {
     const a = SakuraExport.audit(p);
-    console.log('  ' + (p.object + '/' + p.key).padEnd(11), String(a.triangles).padStart(6), 'triangles, open edges', a.open);
-    if (a.open) fail('open edges in the split ' + p.object + ' ' + p.key + ' shell');
+    console.log('  ' + (p.object + '/' + p.key).padEnd(11), String(a.triangles).padStart(6), 'triangles, open edges', a.open, ', edges shared by >2 faces', a.nonManifold, ', vertices not on one fan', a.badVerts);
+    if (a.open || a.nonManifold || a.badVerts) fail('the split ' + p.object + ' ' + p.key + ' shell is not a closed 2-manifold');
   }
   const bbox = ps => { const b = [Infinity, Infinity, Infinity, -Infinity, -Infinity, -Infinity]; for (const p of ps) for (let i = 0; i < p.verts.length; i += 3) for (let j = 0; j < 3; j++) { b[j] = Math.min(b[j], p.verts[i + j]); b[j + 3] = Math.max(b[j + 3], p.verts[i + j]); } return b; };
   const tree = bbox(parts.filter(p => p.object === 'tree' && p.key !== 'peg')), peg = bbox(parts.filter(p => p.key === 'peg')), base = bbox(parts.filter(p => p.object === 'base'));
-  if (tree[2] !== 0 || base[2] !== 0) fail('split pieces do not sit on the bed');
+  if (Math.abs(tree[2]) > 1e-9 || Math.abs(base[2]) > 1e-9) fail('split pieces do not sit on the bed');
   if (base[0] <= tree[3]) fail('base overlaps the tree on the bed');
-  if (Math.abs(peg[2] - tree[5]) > 1e-6) fail('peg does not start at the trunk end');
+  if (!(peg[2] <= tree[5] && peg[2] > tree[5] - 0.05)) fail('peg does not start at the trunk end');   // it reaches a little into the trunk (cubes are grown 0.01 mm)
   // socket: trunk footprint in the base (its cells are empty in the base's plate); the peg is 0.2 mm thinner per side
   const plate = m.cubes.filter(c => c.k === 0).length, baseCells = new Set(m.trunkCells.map(([c, r]) => c + ',' + r));
   const pegW = peg[3] - peg[0], pegD = peg[4] - peg[1], pegL = peg[5] - peg[2];

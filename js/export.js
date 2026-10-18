@@ -19,25 +19,43 @@ const SakuraExport = (function () {
 
   // closed surface of every cell of one colour: emit a face wherever the neighbour is not that colour.
   // place(c, r, k) maps a cell corner to print coordinates in cube units.
+  // Every cube is grown by GROW mm on all sides first. QR patterns are full of cubes of one colour that touch only
+  // along an edge or at a corner; as they are, those spots are edges with four faces (strict mesh checkers call them
+  // broken faces), and splitting the vertices does not survive a reader that welds vertices by position (every STL
+  // reader). Grown, such cubes overlap in a GROW*2 thick bridge, and the union of boxes that always overlap where they
+  // touch is a clean closed surface. Neighbouring colours overlap by as much, which slicers clip.
+  const GROW = 0.01;
   function shell(cells, colourId, s, place) {
     const { N, K, g } = cells, verts = [], tris = [], index = new Map();
     const at = (c, r, k) => (c < 0 || r < 0 || c >= N || r >= N || k < 0 || k >= K) ? 0 : g[(k * N + r) * N + c];
+    // refined grid: along each axis, slab 2i is the thin layer [i - e, i + e] round lattice plane i, slab 2i + 1 the
+    // inside [i + e, i + 1 - e] of cell i; a refined cell is filled if a grown cube of the colour covers it
+    const n = 2 * N + 1, m = 2 * K + 1, cover = [];
+    for (let x = 0; x < Math.max(n, m); x++) cover.push((x & 1) ? [x >> 1] : [(x >> 1) - 1, x >> 1]);
+    const fine = new Uint8Array(n * n * m);
+    for (let z = 0; z < m; z++) for (let y = 0; y < n; y++) for (let x = 0; x < n; x++) {
+      let on = 0;
+      for (const k of cover[z]) for (const r of cover[y]) for (const c of cover[x]) if (at(c, r, k) === colourId) on = 1;
+      fine[(z * n + y) * n + x] = on;
+    }
+    const filled = (x, y, z) => x >= 0 && y >= 0 && z >= 0 && x < n && y < n && z < m && fine[(z * n + y) * n + x] === 1;
+    const e = GROW / s, coord = i => (i >> 1) + ((i & 1) ? e : -e);   // refined plane i -> cube units
     const vid = p => {
-      const q = place(p[0], p[1], p[2]), key = q.join(',');
+      const key = p.join(',');
       let i = index.get(key);
-      if (i === undefined) { i = verts.length / 3; verts.push(q[0] * s, q[1] * s, q[2] * s); index.set(key, i); }
+      if (i === undefined) { const q = place(coord(p[0]), coord(p[1]), coord(p[2])); i = verts.length / 3; verts.push(q[0] * s, q[1] * s, q[2] * s); index.set(key, i); }
       return i;
     };
     // place() is an axis flip or shift; a flip turns a face's winding inside out
-    const o = place(0, 0, 0), e = [place(1, 0, 0), place(0, 1, 0), place(0, 0, 1)].map(v => v.map((x, j) => x - o[j]));
-    const det = e[0][0] * (e[1][1] * e[2][2] - e[1][2] * e[2][1]) - e[0][1] * (e[1][0] * e[2][2] - e[1][2] * e[2][0]) + e[0][2] * (e[1][0] * e[2][1] - e[1][1] * e[2][0]);
+    const o = place(0, 0, 0), ax = [place(1, 0, 0), place(0, 1, 0), place(0, 0, 1)].map(v => v.map((x, j) => x - o[j]));
+    const det = ax[0][0] * (ax[1][1] * ax[2][2] - ax[1][2] * ax[2][1]) - ax[0][1] * (ax[1][0] * ax[2][2] - ax[1][2] * ax[2][0]) + ax[0][2] * (ax[1][0] * ax[2][1] - ax[1][1] * ax[2][0]);
     const TAN = [[1, 2], [2, 0], [0, 1]];   // (t0, t1, axis) is right-handed
-    for (let k = 0; k < K; k++) for (let r = 0; r < N; r++) for (let c = 0; c < N; c++) {
-      if (g[(k * N + r) * N + c] !== colourId) continue;
+    for (let z = 0; z < m; z++) for (let y = 0; y < n; y++) for (let x = 0; x < n; x++) {
+      if (!fine[(z * n + y) * n + x]) continue;
       for (let axis = 0; axis < 3; axis++) for (const sign of [1, -1]) {
-        const nb = [c, r, k]; nb[axis] += sign;
-        if (at(nb[0], nb[1], nb[2]) === colourId) continue;
-        const [t0, t1] = TAN[axis], pt = (u, v) => { const p = [c, r, k]; if (sign > 0) p[axis] += 1; p[t0] += u; p[t1] += v; return p; };
+        const nb = [x, y, z]; nb[axis] += sign;
+        if (filled(nb[0], nb[1], nb[2])) continue;
+        const [t0, t1] = TAN[axis], pt = (u, v) => { const p = [x, y, z]; if (sign > 0) p[axis] += 1; p[t0] += u; p[t1] += v; return p; };
         let q = [pt(0, 0), pt(1, 0), pt(1, 1), pt(0, 1)];   // counter-clockwise around +axis
         if (sign * det < 0) q = q.reverse();
         const ids = q.map(vid);
@@ -49,8 +67,10 @@ const SakuraExport = (function () {
 
   // an axis-aligned box in millimetres, faces outward
   function box(x0, y0, z0, x1, y1, z1) {
-    const one = cellGrid(1, 1); one.g[0] = 1;
-    return shell(one, 1, 1, (c, r, k) => [c ? x1 : x0, r ? y1 : y0, k ? z1 : z0]);
+    const verts = [x0, y0, z0, x1, y0, z0, x1, y1, z0, x0, y1, z0, x0, y0, z1, x1, y0, z1, x1, y1, z1, x0, y1, z1];
+    const q = [[0, 3, 2, 1], [4, 5, 6, 7], [0, 1, 5, 4], [1, 2, 6, 5], [2, 3, 7, 6], [3, 0, 4, 7]], tris = [];
+    for (const [a, b, c, d] of q) tris.push(a, b, c, a, c, d);
+    return { verts, tris };
   }
 
   // parts = [{ key, name, hex, verts, tris, object }], object 'tree' or 'base'.
@@ -62,7 +82,9 @@ const SakuraExport = (function () {
     const { N, KMAX, kTopMax: T } = model, keys = PART_ORDER.filter(k => !(merge && merge[k]));
     const id = name => ID[(merge && merge[name]) || name];
     const wp = opt.warp || ((c, r, k) => [c, r, k]);   // warps keep k
-    const parts = (cells, place, object, suffix) => keys.map(k => Object.assign({ key: k, object }, colours[k], suffix ? { name: colours[k].name + suffix } : null, shell(cells, ID[k], s, place)))
+    // grown cubes reach GROW below the bed: lift everything back onto it
+    const lift = place => (c, r, k) => { const p = place(c, r, k); return [p[0], p[1], p[2] + GROW / s]; };
+    const parts = (cells, place, object, suffix) => keys.map(k => Object.assign({ key: k, object }, colours[k], suffix ? { name: colours[k].name + suffix } : null, shell(cells, ID[k], s, lift(place))))
       .filter(p => p.tris.length);
     if (opt.layout !== 'split') {
       const cells = cellGrid(N, KMAX + 1);
@@ -194,14 +216,33 @@ const SakuraExport = (function () {
   }
 
   // edges shared by != 2 triangles (0 for a clean closed manifold)
-  function audit(part) {
-    const e = new Map(), T = part.tris;
+  // checked the way a reader sees the mesh: vertices closer than `weld` mm count as one (STL has no shared vertices)
+  function audit(part, weld = 0.005) {
+    const id = new Map(), V = part.verts, at = [];
+    for (let i = 0; i < V.length; i += 3) {
+      const k = [V[i], V[i + 1], V[i + 2]].map(x => Math.round(x / weld)).join();
+      if (!id.has(k)) id.set(k, id.size);
+      at.push(id.get(k));
+    }
+    const e = new Map(), T = part.tris.map(v => at[v]);
     for (let t = 0; t < T.length; t += 3) for (let j = 0; j < 3; j++) {
       const a = T[t + j], b = T[t + (j + 1) % 3], key = a < b ? a + '_' + b : b + '_' + a;
       e.set(key, (e.get(key) || 0) + 1);
     }
     let open = 0, nonManifold = 0; for (const v of e.values()) { if (v === 1) open++; else if (v > 2) nonManifold++; }
-    return { triangles: T.length / 3, open, nonManifold };
+    // vertices whose triangles do not form one fan (joined through edges at that vertex)
+    const fans = new Map();   // vertex -> triangles round it
+    for (let t = 0; t < T.length; t += 3) for (let j = 0; j < 3; j++) { const v = T[t + j]; if (!fans.has(v)) fans.set(v, []); fans.get(v).push(t); }
+    let badVerts = 0;
+    for (const [v, ts] of fans) {
+      const seen = new Set([ts[0]]), stack = [ts[0]];
+      while (stack.length) {
+        const t = stack.pop(), others = [T[t], T[t + 1], T[t + 2]].filter(x => x !== v);
+        for (const u of ts) if (!seen.has(u) && [T[u], T[u + 1], T[u + 2]].some(x => others.includes(x))) { seen.add(u); stack.push(u); }
+      }
+      if (seen.size !== ts.length) badVerts++;
+    }
+    return { triangles: T.length / 3, open, nonManifold, badVerts };
   }
 
   return { buildParts, to3MF, toSTLZip, stl, model3mf, zip, topViewCanvas, audit };
