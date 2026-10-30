@@ -205,6 +205,129 @@ const SakuraExport = (function () {
     return zip(parts.map(p => ({ name: base + (p.object === 'base' ? '-base-' : '-') + p.key + '.stl', data: stl(p) })));
   }
 
+  // ---- glTF binary (GLB) for animation and the web (three.js, Blender) ----
+  // The assembled tree as printed (same cubes, same perspective warp, not grown), only its outer surface, flat-shaded.
+  // glTF conventions: metres, +Y up. The plate's bottom is at y = 0, centred on the origin; column c runs along +X and
+  // row r along +Z, so looking down from +Y with -Z at the top of the screen the code reads the right way round.
+  // Nodes 'plate' (level 0), 'trunk' (wood) and 'canopy' (blossom and painted tops) under one root node 'SakuraQR',
+  // whose extras (three.js: userData) carry what an animator needs to place things: see `info` below.
+  // One material per colour; COLOR_0 is a per-cube brightness (opt.shade) multiplied onto it, as in the page preview.
+  // glTF keeps COLOR_0 within 0..1, so each colour's brightness is divided by its brightest cube's and the material
+  // brightened to match (capped at white).
+  const MAT_NAME = { dark: 'blossom', light: 'highlight', wood: 'wood' };
+  const srgbToLinear = v => v <= 0.04045 ? v / 12.92 : Math.pow((v + 0.055) / 1.055, 2.4);
+  // opt = { warp, shade(cube) -> brightness, extras: merged into the root node's extras }
+  function toGLB(model, s, colours, merge, options) {
+    const opt = Object.assign({ warp: null, shade: null, extras: null }, options);
+    const { N, P, n, q } = model, K = model.KMAX + 1, mm = s / 1000;
+    const wp = opt.warp || ((c, r, k) => [c, r, k]);
+    const key = name => (merge && merge[name]) || name;
+    const at = new Int32Array(N * N * K).fill(-1);
+    model.cubes.forEach((cb, i) => { at[(cb.k * N + cb.r) * N + cb.c] = i; });
+    const empty = (c, r, k) => c < 0 || r < 0 || k < 0 || c >= N || r >= N || k >= K || at[(k * N + r) * N + c] < 0;
+    // a cell corner -> metres, the plate centred on the origin
+    const pos = (c, r, k) => { const w = wp(c, r, k); return [(w[0] - P / 2) * mm, k * mm, (w[1] - P / 2) * mm]; };
+    const NODES = ['plate', 'trunk', 'canopy'], nodeOf = cb => cb.kind === 'plate' ? 'plate' : cb.kind === 'wood' ? 'trunk' : 'canopy';
+    const prims = new Map(), peak = {};   // node|colour -> { p, nrm, col, idx }; colour -> brightest shade
+    const DIRS = [[1, 0, 0], [-1, 0, 0], [0, 1, 0], [0, -1, 0], [0, 0, 1], [0, 0, -1]];   // (dc, dr, dk)
+    for (const cb of model.cubes) {
+      const colour = key(cb.color), id = nodeOf(cb) + '|' + colour, sh = opt.shade ? opt.shade(cb) : 1;
+      if (!prims.has(id)) prims.set(id, { p: [], nrm: [], col: [], idx: [] });
+      peak[colour] = Math.max(peak[colour] || 0, sh);
+      const g = prims.get(id);
+      for (const d of DIRS) {
+        if (!empty(cb.c + d[0], cb.r + d[1], cb.k + d[2])) continue;
+        // the face's four corners in the cell lattice, then in metres
+        const axis = d[0] ? 0 : d[1] ? 1 : 2, t = [0, 1, 2].filter(a => a !== axis), base = [cb.c, cb.r, cb.k];
+        if (d[axis] > 0) base[axis] += 1;
+        const quad = [[0, 0], [1, 0], [1, 1], [0, 1]].map(([u, v]) => { const x = base.slice(); x[t[0]] += u; x[t[1]] += v; return pos(x[0], x[1], x[2]); });
+        // outward: the cell's own (dc, dr, dk) is (x, z, y) in glTF
+        const out = [d[0], d[2], d[1]], [a, b, c] = quad;
+        const u = [b[0] - a[0], b[1] - a[1], b[2] - a[2]], v = [c[0] - a[0], c[1] - a[1], c[2] - a[2]];
+        let nx = u[1] * v[2] - u[2] * v[1], ny = u[2] * v[0] - u[0] * v[2], nz = u[0] * v[1] - u[1] * v[0];
+        if (nx * out[0] + ny * out[1] + nz * out[2] < 0) { quad.reverse(); nx = -nx; ny = -ny; nz = -nz; }
+        const l = Math.hypot(nx, ny, nz), v0 = g.p.length / 3;
+        for (const p of quad) { g.p.push(p[0], p[1], p[2]); g.nrm.push(nx / l, ny / l, nz / l); g.col.push(sh, sh, sh); }
+        g.idx.push(v0, v0 + 1, v0 + 2, v0, v0 + 2, v0 + 3);
+      }
+    }
+
+    // ---- assemble: one buffer, a bufferView per accessor, 4-byte aligned ----
+    const colourKeys = PART_ORDER.filter(k => [...prims.keys()].some(id => id.endsWith('|' + k)));
+    for (const [id, g] of prims) { const pk = peak[id.split('|')[1]]; for (let i = 0; i < g.col.length; i++) g.col[i] /= pk; }
+    const json = {
+      asset: { version: '2.0', generator: 'SakuraQR' },
+      scene: 0, scenes: [{ nodes: [0] }],
+      nodes: [{ name: 'SakuraQR', children: [] }], meshes: [], materials: [], accessors: [], bufferViews: [], buffers: []
+    };
+    for (const k of colourKeys) {
+      const rgb = [1, 3, 5].map(i => Math.min(1, srgbToLinear(parseInt(colours[k].hex.slice(i, i + 2), 16) / 255) * peak[k]));
+      json.materials.push({ name: MAT_NAME[k], pbrMetallicRoughness: { baseColorFactor: rgb.concat(1), metallicFactor: 0, roughnessFactor: 0.9 } });
+    }
+    const chunks = []; let length = 0;
+    const view = (typed, target) => {
+      const bytes = new Uint8Array(typed.buffer, typed.byteOffset, typed.byteLength), pad = (4 - length % 4) % 4;
+      if (pad) { chunks.push(new Uint8Array(pad)); length += pad; }
+      json.bufferViews.push({ buffer: 0, byteOffset: length, byteLength: bytes.length, target });
+      chunks.push(bytes); length += bytes.length;
+      return json.bufferViews.length - 1;
+    };
+    const accessor = (arr, type, minmax) => {
+      const a = { bufferView: view(new Float32Array(arr), 34962), componentType: 5126, count: arr.length / 3, type };
+      if (minmax) {
+        a.min = [Infinity, Infinity, Infinity]; a.max = [-Infinity, -Infinity, -Infinity];
+        for (let i = 0; i < arr.length; i++) { a.min[i % 3] = Math.min(a.min[i % 3], Math.fround(arr[i])); a.max[i % 3] = Math.max(a.max[i % 3], Math.fround(arr[i])); }
+      }
+      json.accessors.push(a); return json.accessors.length - 1;
+    };
+    NODES.forEach(node => {
+      const primitives = [];
+      for (const k of colourKeys) {
+        const g = prims.get(node + '|' + k);
+        if (!g || !g.idx.length) continue;
+        const big = g.p.length / 3 > 65535, idx = big ? new Uint32Array(g.idx) : new Uint16Array(g.idx);
+        json.accessors.push({ bufferView: view(idx, 34963), componentType: big ? 5125 : 5123, count: idx.length, type: 'SCALAR' });
+        const indices = json.accessors.length - 1;
+        primitives.push({ attributes: { POSITION: accessor(g.p, 'VEC3', true), NORMAL: accessor(g.nrm, 'VEC3'), COLOR_0: accessor(g.col, 'VEC3') }, indices, material: colourKeys.indexOf(k) });
+      }
+      if (!primitives.length) return;
+      json.meshes.push({ name: node, primitives });
+      json.nodes.push({ name: node, mesh: json.meshes.length - 1 });
+      json.nodes[0].children.push(json.nodes.length - 1);
+    });
+    json.buffers.push({ byteLength: length });
+
+    // ---- what an animator needs, in metres (cells where it says so) ----
+    const topK = model.topK, cell = i => Math.round(i * mm * 1e6) / 1e6;
+    const tc = model.trunkCells, tcx = Math.min(...tc.map(t => t[0])), tcr = Math.min(...tc.map(t => t[1]));
+    let hMax = 0; for (const cb of model.cubes) hMax = Math.max(hMax, cb.k + 1);
+    const info = {
+      units: 'metres; +Y up; plate bottom at y = 0, centred on the origin; columns along +X, rows along +Z (-Z is the top edge of the code seen from above)',
+      cell: cell(1),
+      plate: { size: cell(P), cells: P, top: cell(1) },
+      code: { modules: n, size: cell(n), centre: [cell(q + n / 2 - P / 2), cell(q + n / 2 - P / 2)] },
+      trunk: { centre: [cell(tcx + 1 - P / 2), cell(tcr + 1 - P / 2)], size: cell(2), top: cell(model.kT + 1) },
+      height: cell(hMax),
+      // grid over the whole model (it reaches past the plate when the tree stands in a corner): cell (col, row) spans
+      // x from origin[0] + col * cell, z from origin[1] + row * cell; surface[row][col] = height of its highest cube's
+      // top in cells (1 = bare plate, 0 = nothing there). The perspective warp moves high cells up to a few % inwards.
+      grid: { cols: N, rows: N, origin: [cell(-P / 2), cell(-P / 2)], surface: Array.from({ length: N }, (_, r) => Array.from({ length: N }, (_, c) => topK[r * N + c] ? topK[r * N + c] + 1 : (r < P && c < P ? 1 : 0))) },
+      colours: Object.fromEntries(colourKeys.map(k => [MAT_NAME[k], colours[k].hex])),
+      nodes: { plate: 'level 0, the base plate with the code', trunk: 'trunk, branches and roots', canopy: 'blossom cubes, painted tops included' }
+    };
+    json.nodes[0].extras = Object.assign({ sakuraqr: info }, opt.extras);
+
+    // ---- container: header, JSON chunk (space-padded), BIN chunk (zero-padded) ----
+    const js = utf8(JSON.stringify(json)), jsLen = Math.ceil(js.length / 4) * 4, binLen = Math.ceil(length / 4) * 4;
+    const out = new Uint8Array(12 + 8 + jsLen + 8 + binLen), dv = new DataView(out.buffer);
+    dv.setUint32(0, 0x46546C67, true); dv.setUint32(4, 2, true); dv.setUint32(8, out.length, true);
+    dv.setUint32(12, jsLen, true); dv.setUint32(16, 0x4E4F534A, true);
+    out.set(js, 20); out.fill(0x20, 20 + js.length, 20 + jsLen);
+    let p = 20 + jsLen; dv.setUint32(p, binLen, true); dv.setUint32(p + 4, 0x004E4942, true); p += 8;
+    for (const c of chunks) { out.set(c, p); p += c.length; }
+    return out;
+  }
+
   // top view as pixels: the colour of the highest cube in every column, `px` pixels per module
   function topViewCanvas(model, hex, px, doc) {
     const { N, KMAX } = model, cv = (doc || document).createElement('canvas');
@@ -245,6 +368,6 @@ const SakuraExport = (function () {
     return { triangles: T.length / 3, open, nonManifold, badVerts };
   }
 
-  return { buildParts, to3MF, toSTLZip, stl, model3mf, zip, topViewCanvas, audit };
+  return { buildParts, to3MF, toSTLZip, toGLB, stl, model3mf, zip, topViewCanvas, audit };
 })();
 if (typeof module !== 'undefined') module.exports = SakuraExport;

@@ -112,6 +112,8 @@
   // ---------- voxel mesh (only faces that touch air) ----------
   const hexRGB = h => [1, 3, 5].map(i => parseInt(h.slice(i, i + 2), 16) / 255);
   const jit = (a, b, c) => { let h = (a * 374761393 + b * 668265263 + c * 1274126177) | 0; h = (h ^ (h >>> 13)) * 1274126177 | 0; return ((h ^ (h >>> 16)) >>> 0) / 4294967295 - 0.5; };
+  // a little brightness noise per cube, so the blocks read as blocks
+  const shadeOf = cb => 1 + jit(cb.c, cb.r, cb.k) * (cb.kind === 'plate' ? 0 : cb.color === 'dark' ? 0.16 : 0.05);
   const FACES = [
     { n: [0, 1, 0], q: [[0, 1, 0], [1, 1, 0], [1, 1, 1], [0, 1, 1]] },   // top (+k)
     { n: [0, -1, 0], q: [[0, 0, 0], [0, 0, 1], [1, 0, 1], [1, 0, 0]] }, // bottom
@@ -125,7 +127,7 @@
     const idx = (c, r, k) => (k * N + r) * N + c;
     const filled = (c, r, k) => c >= 0 && r >= 0 && c < N && r < N && k >= 0 && (k === 0 || (k <= m.KMAX && m.vox[idx(c, r, k)] !== 0));
     for (const cb of m.cubes) {
-      const sh = 1 + jit(cb.c, cb.r, cb.k) * (cb.kind === 'plate' ? 0 : cb.color === 'dark' ? 0.16 : 0.05);
+      const sh = shadeOf(cb);
       const tagv = cb.color === 'dark' ? sh : cb.color === 'wood' ? 10 + sh : (cb.kind === 'plate' ? -1 : 20 + sh);
       for (const F of FACES) {
         if (filled(cb.c + F.n[0], cb.r + F.n[2], cb.k + F.n[1])) continue;
@@ -587,6 +589,17 @@
     const parts = exportParts();
     download(baseName() + '-stl.zip', SakuraExport.toSTLZip(parts, baseName()), 'application/zip');
     lastExport = baseName() + '-stl.zip（' + parts.length + ' 个 STL）';
+  }));
+  // the tree as printed, for animation (three.js, Blender): see SakuraExport.toGLB
+  const DESIGN_KEYS = ['ecc', 'upper', 'mask', 'onCanopy', 'place', 'persp', 'perspDist', 'verUp', 'dome', 'module', 'trunk', 'crown', 'squash', 'lobes', 'puff', 'rough', 'ledge', 'wood', 'pink', 'light', 'seedAdd'];
+  $('dlglb').addEventListener('click', e => busy(e.currentTarget, () => {
+    const merge = state.wood === 'brown' ? null : { wood: 'light' };
+    const glb = SakuraExport.toGLB(model, S(), exportColours(), merge, {
+      warp: model.warp, shade: shadeOf,
+      extras: { text: state.encoded, settings: Object.fromEntries(DESIGN_KEYS.map(k => [k, state[k]])) }
+    });
+    download(baseName() + '.glb', glb, 'model/gltf-binary');
+    lastExport = baseName() + '.glb（' + (glb.length / 1024).toFixed(0) + ' KB）';
   }));
   $('dlpng').addEventListener('click', e => busy(e.currentTarget, () => {
     const hex = { dark: PINKS[state.pink][1], light: LIGHTS[state.light][1], wood: state.wood === 'brown' ? COLORS.brown : LIGHTS[state.light][1] };
