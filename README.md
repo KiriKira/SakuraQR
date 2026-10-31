@@ -77,6 +77,31 @@ python3 -m http.server 8000
 
 3D 预览用 three.js r128，浏览器内解码用 jsQR，都从 CDN 加载。二维码编码器（`js/qr.js`）是自己实现的，支持版本 1–6、字节和字母数字模式、四种纠错等级和任意掩码。
 
+## 动画场景（scene.js）
+
+给导出的 `.glb` 配的一段小动画，以后放进别的网页或 AR 里跑：樱花花瓣从树冠里飘下来，三个方块小人在树下绕着树干你追我赶。
+
+```js
+import setup from './scene.js';
+const { update, dispose } = await setup({ THREE, stage, tree, info, mode });   // 每帧 update(dt, elapsed)，用完 dispose()
+```
+
+- `stage` 是一个 Group，场景里的东西都加在它下面。`tree` 是已经放进 stage 的树，只读，不会去动它。`info` 就是 `tree.userData.sakuraqr`。`mode` 传 `'3d'` 或 `'ar'`，两种模式下场景完全一样。
+- 渲染器、相机、灯光、背景、地面都由宿主页面负责。scene.js 不碰 DOM，只从 `./assets/` 加载三个小人。three.js 0.170.0 通过 import map 里的 `three` 和 `three/addons/` 引入。
+- 不放进树里：启动时把树自己的三角形按每格 4×4 的分辨率栅格化成竖直的“柱”，每根柱记下哪几段高度是实心的。花瓣和小人只会移动到这些柱显示为空的地方，所以换成别的码长出来的树也一样适用。
+- 花瓣：240 片，两种粉色，用一个 InstancedMesh 画。花瓣从树冠顶面或树冠下沿冒出来，被风吹着边转边落，落在底座或树冠顶上，停几秒后缩小消失，再从树冠里重新出现。小人跑过时会把地上的花瓣踢起来。
+- 小人：`assets/walker-{blue,red,gold}.glb`，配色照参考图里的三个像素小人：蓝色兜帽、红色法师帽、带角的金色头盔。每个小人是一个蒙皮网格，带一段 `walk` 循环动画（摆臂、迈腿、身体上下晃，脚不会陷进地面）。三个人沿一条绕树干的环路跑，大约在树干到底座边缘一半的位置，遇到低矮的树枝和树根会绕开。蓝色领跑，红色和金色紧跟在后面，彼此忽近忽远。小人由 `node tools/make-walkers.mjs` 生成，单位是“格”（1 = `info.cell`）。
+- 随机数用固定种子，每次打开都一样。只用不透明材质，不加灯也不做后处理。对这棵示例树，场景自身一共 4 次绘制调用（算上阴影 8 次）、约 7 千个三角形。
+
+自检：
+
+```sh
+npm install                  # three@0.170.0，只给 preview.html 用
+node test/shots.mjs          # 用本地 HTTP 服务打开 preview.html，跑自检并截图到 screenshots/
+```
+
+`preview.html` 是一个最简单的宿主页面：一盏半球光加一盏能投影的平行光、OrbitControls，加载 `tree.glb` 后调用 `setup()`。`?test=1` 会让动画按固定步长快进 90 秒，每 3 秒检查一次：每个小人的每个顶点（蒙皮之后）和每片花瓣的每个角，用向上的射线数穿过树的次数来判断是否在树里面，这个判断不依赖 scene.js 自己的碰撞柱。同时检查有没有东西超出底座 3 格、有没有低于 y = 0、小人有没有走出底座、彼此有没有撞上；最后统计绘制调用、三角形数和 `update()` 的耗时，并确认 `dispose()` 之后 stage 里只剩下树。控制台出现报错或警告、或者访问了本地服务以外的网址，也算失败。`node --no-warnings test/field-debug.mjs` 会用文字打印碰撞柱和环路的长度。
+
 ## 测试
 
 ```sh
@@ -94,4 +119,7 @@ js/tree.js      樱花树生成器（树形、花云、可打印性修剪、俯�
 js/export.js    3MF / STL / ZIP / GLB / 俯视图导出
 js/app.js       界面、3D 预览、扫描模拟
 test/smoke.js   冒烟测试
+scene.js        动画场景（花瓣、小人），preview.html 是它的预览和自检页
+assets/         动画用的小人模型，由 tools/make-walkers.mjs 生成
+test/shots.mjs  动画自检和截图（screenshots/）
 ```

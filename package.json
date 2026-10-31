@@ -1,0 +1,13 @@
+{
+  "name": "sakuraqr",
+  "private": true,
+  "description": "SakuraQR generator, plus the cherry-blossom animation scene (scene.js) for the exported GLB.",
+  "scripts": {
+    "test": "node test/smoke.js",
+    "walkers": "node tools/make-walkers.mjs",
+    "shots": "node test/shots.mjs"
+  },
+  "devDependencies": {
+    "three": "0.170.0"
+  }
+}
