@@ -559,8 +559,10 @@
   function exportParts() {
     return SakuraExport.buildParts(model, S(), exportColours(), state.wood === 'brown' ? null : { wood: 'light' }, { layout: state.layout, clear: state.clear, warp: model.warp });
   }
+  // no dots: a print service took "sakuraqr-mq.openkiri.zip.3mf" for a zip archive (the domain's .zip) and rejected
+  // the files inside it as unsupported formats
   function baseName() {
-    const host = (state.encoded || 'sakura').replace(/^[a-z][a-z0-9+.-]*:\/\//i, '').replace(/[^A-Za-z0-9._-]+/g, '-').replace(/^-+|-+$/g, '').toLowerCase();
+    const host = (state.encoded || 'sakura').replace(/^[a-z][a-z0-9+.-]*:\/\//i, '').replace(/[^A-Za-z0-9_-]+/g, '-').replace(/^-+|-+$/g, '').toLowerCase();
     return 'sakuraqr-' + (host || 'tree').slice(0, 40);
   }
   function download(name, data, type) {

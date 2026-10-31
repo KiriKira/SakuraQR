@@ -60,11 +60,11 @@ function check3MF(z, modelXml) {
 }
 
 // split layout: tree upside down on the bed with a peg on the trunk, base next to it with a socket
-// (also at the smallest cube size, 1.5 mm, where the clearance is a large share of the peg)
+// (also at 1.5 mm and the smallest cube size, 1 mm, where the clearance is a large share of the peg)
 // (and with the trunk in the plate's bottom-right corner, the canopy hanging past the plate)
 const plateTree = shift => buildCanopyTree(qr.matrix, { quiet: 3, crown: 1, squash: 0.7, trunk: 9, lobes: 4, puff: 0.85, rough: 1, maxLedge: 2, onCanopy: false, seed: 12345, shift, over: shift ? 11 : 0 });
 const CORNER = 11;   // 21 x 21 code, 3-cell border: the trunk's outer edge one cell in from the plate's corner
-for (const [onCanopy, s, shift] of [[true, 4, 0], [false, 4, 0], [false, 1.5, 0], [false, 1.5, CORNER]]) {
+for (const [onCanopy, s, shift] of [[true, 4, 0], [false, 4, 0], [false, 1.5, 0], [false, 1, 0], [false, 1.5, CORNER]]) {
   const m = onCanopy ? model : plateTree(shift);
   const parts = SakuraExport.buildParts(m, s, colours, null, { layout: 'split', clear: 0.2 });
   console.log('split, ' + s + ' mm cubes, code ' + (onCanopy ? 'on the canopy' : 'on canopy and base') + (shift ? ', tree shifted ' + shift : '') + ':');
