@@ -1,8 +1,12 @@
 // Builds the three walking figures for scene.js as glTF binaries: node tools/make-walkers.mjs
 //
-// Each figure is a voxel model (4 voxels per tree cube) skinned rigidly to five joints — hips, two arms, two legs —
+// Each figure is a voxel model (8 voxels per tree cube) skinned rigidly to five joints — hips, two arms, two legs —
 // with one looping "walk" clip: legs and arms swing, the hips bob, and the hips are lifted just enough each frame
-// that no foot ever dips below the ground. One mesh, one material (vertex colours) per figure.
+// that no foot ever dips below the ground. One mesh, one material (vertex colours) per figure; faces of the same
+// colour are merged into larger rectangles (greedy meshing) to keep the triangle count low.
+//
+// The look follows the three reference sprites: a blue hooded healer with a white-framed crest and hood tails,
+// a red mage with a tiered, bent-tipped hat and salmon hair, a gold warrior with a horned helmet and brown hair.
 //
 // Units: 1 = one tree cube (scene.js scales by info.cell). +Y up, feet on y = 0, facing +Z.
 // The root node's extras carry { unit, height, radius, stride, cycle }: stride is how far the figure moves over one
@@ -12,120 +16,179 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 const OUT = path.join(path.dirname(fileURLToPath(import.meta.url)), '..', 'assets');
-const V = 0.25;               // voxel edge in tree cubes
+const V = 0.125;              // voxel edge in tree cubes
 const CYCLE = 0.8;            // seconds per walk cycle (two steps)
 const LEG_SWING = 28 * Math.PI / 180;
 const ARM_SWING = 32 * Math.PI / 180;
-const BOB = 0.5;              // extra hip lift at the passing pose, in voxels
+const BOB = 1;                // extra hip lift at the passing pose, in voxels
 const KEYS = 24;
 
 // joints: 0 hips (body, head, hat, cape), 1 arm +x, 2 arm -x, 3 leg +x, 4 leg -x
 const HIPS = 0, ARM_P = 1, ARM_N = 2, LEG_P = 3, LEG_N = 4;
-const PIVOTS = [[0, 3, 0], [4, 6.5, 0], [-4, 6.5, 0], [2, 3, 0], [-2, 3, 0]];   // voxel units, absolute
+const PIVOTS = [[0, 5, 0], [8.5, 11, 0], [-8.5, 11, 0], [2.5, 5, 0], [-2.5, 5, 0]];   // voxel units, absolute
 const JOINT_NAMES = ['hips', 'arm_l', 'arm_r', 'leg_l', 'leg_r'];
 
 function figure() {
   const parts = PIVOTS.map(() => new Map());
   const key = (x, y, z) => x + ',' + y + ',' + z;
+  const set = (j, x, y, z, col) => { if (col) parts[j].set(key(x, y, z), col); else parts[j].delete(key(x, y, z)); };
   const api = {
     parts,
     box(j, x0, x1, y0, y1, z0, z1, col) {
+      for (let x = x0; x < x1; x++) for (let y = y0; y < y1; y++) for (let z = z0; z < z1; z++) set(j, x, y, z, col);
+    },
+    px(j, x, y, z, col) { set(j, x, y, z, col); },
+    // same box on both sides of x = 0
+    pair(j, x0, x1, y0, y1, z0, z1, col) { api.box(j, x0, x1, y0, y1, z0, z1, col); api.box(j, -x1, -x0, y0, y1, z0, z1, col); },
+    // box with its vertical edges and top edges bevelled off by one voxel (bottom edges kept)
+    rbox(j, x0, x1, y0, y1, z0, z1, col, top = true) {
       for (let x = x0; x < x1; x++) for (let y = y0; y < y1; y++) for (let z = z0; z < z1; z++) {
-        if (col) parts[j].set(key(x, y, z), col); else parts[j].delete(key(x, y, z));
+        const ex = x === x0 || x === x1 - 1, ez = z === z0 || z === z1 - 1, ey = top && y === y1 - 1;
+        if ((ex && ez) || (ex && ey) || (ez && ey)) continue;
+        set(j, x, y, z, col);
       }
     },
-    px(j, x, y, z, col) { api.box(j, x, x + 1, y, y + 1, z, z + 1, col); },
-    // mirror helper: same box on both sides of x = 0
-    pair(j, x0, x1, y0, y1, z0, z1, col) { api.box(j, x0, x1, y0, y1, z0, z1, col); api.box(j, -x1, -x0, y0, y1, z0, z1, col); }
+    // vertical cylinder of radius r round (cx, cz), voxel centres inside
+    disc(j, cx, cz, r, y0, y1, col) {
+      for (let x = Math.floor(cx - r) - 1; x <= cx + r + 1; x++) for (let z = Math.floor(cz - r) - 1; z <= cz + r + 1; z++) {
+        if ((x + 0.5 - cx) ** 2 + (z + 0.5 - cz) ** 2 > r * r) continue;
+        for (let y = y0; y < y1; y++) set(j, x, y, z, col);
+      }
+    },
+    // recolour the frontmost (+Z) / backmost (-Z) voxel of each (x, y) column in the range
+    front(j, x0, x1, y0, y1, col, dir = 1) {
+      for (let x = x0; x < x1; x++) for (let y = y0; y < y1; y++) {
+        let best = null;
+        for (const k of parts[j].keys()) {
+          const [a, b, c] = k.split(',').map(Number);
+          if (a === x && b === y && (best === null || c * dir > best * dir)) best = c;
+        }
+        if (best !== null) set(j, x, y, best, col);
+      }
+    },
+    back(j, x0, x1, y0, y1, col) { api.front(j, x0, x1, y0, y1, col, -1); }
   };
   return api;
 }
 
-// The common chibi body: 2-voxel legs, 6x4x4 torso, 2x4x2 arms, 8x6x6 head with the face on the +Z side.
-function base(f, c) {
-  for (const [j, x0] of [[LEG_P, 1], [LEG_N, -3]]) {
-    f.box(j, x0, x0 + 2, 0, 3, -1, 1, c.leg);
-    f.box(j, x0, x0 + 2, 0, 1, -1, 1, c.shoe);
+// The common body (chibi: the head is about half the height): 3-voxel legs with shoes, a stepped robe over the
+// hips, a 12x6x8 torso with shoulders, 3x7x4 arms with hands. Heads start at y = 12 and differ per figure.
+function body(f, c) {
+  for (const [j, x0] of [[LEG_P, 1], [LEG_N, -4]]) {
+    f.box(j, x0, x0 + 3, 2, 5, -2, 2, c.leg);
+    f.box(j, x0, x0 + 3, 0, 2, -2, 3, c.shoe);
   }
-  f.box(HIPS, -3, 3, 3, 7, -2, 2, c.torso);
-  for (const [j, x0] of [[ARM_P, 3], [ARM_N, -5]]) {
-    f.box(j, x0, x0 + 2, 3, 7, -1, 1, c.sleeve);
-    f.box(j, x0, x0 + 2, 3, 4, -1, 1, c.hand);
+  f.rbox(HIPS, -8, 8, 2, 4, -6, 6, c.skirt, false);
+  f.rbox(HIPS, -7, 7, 4, 6, -5, 5, c.skirt, false);
+  f.rbox(HIPS, -6, 6, 6, 12, -4, 4, c.torso, false);
+  f.rbox(HIPS, -7, 7, 10, 12, -3, 3, c.torso);
+  for (const [j, x0] of [[ARM_P, 7], [ARM_N, -10]]) {
+    f.rbox(j, x0, x0 + 3, 5, 12, -2, 2, c.sleeve);
+    f.box(j, x0, x0 + 3, 5, 6, -2, 2, c.cuff);
+    f.box(j, x0, x0 + 3, 3, 5, -1, 2, c.hand);
   }
-  f.box(HIPS, -4, 4, 7, 13, -3, 3, c.hair);
-  f.box(HIPS, -3, 3, 7, 11, 2, 3, c.skin);           // face on the front layer
-  f.box(HIPS, -2, -1, 8, 10, 2, 3, c.eye);
-  f.box(HIPS, 1, 2, 8, 10, 2, 3, c.eye);
 }
 
-// Blue: hooded healer — blue hood with a white band and a light-blue crest, tails sticking out, short dark-blue cape.
+// Face on the front layer (z = 5) of a 14-wide head: eyes 2x3, a small mouth.
+function face(f, c) {
+  f.box(HIPS, -6, 6, 12, 19, 5, 6, c.skin);
+  f.box(HIPS, -4, -2, 14, 17, 5, 6, c.eye);
+  f.box(HIPS, 2, 4, 14, 17, 5, 6, c.eye);
+  f.box(HIPS, -1, 1, 13, 14, 5, 6, c.mouth);
+}
+
+const SKIN = { skin: '#EBB693', mouth: '#D49274', hand: '#EBB693' };
+
+// Blue: hooded healer.
 function blue() {
-  const c = {
-    hood: '#2D5BD0', dark: '#1F3F9E', light: '#5FB2F0', white: '#F6F6F2', skin: '#F2BFA4', eye: '#3A8CE0',
-    leg: '#F6F6F2', shoe: '#2D5BD0', torso: '#3E86E2', sleeve: '#2D5BD0', hand: '#F6F6F2', hair: '#2D5BD0'
-  };
-  const f = figure(); base(f, c);
-  f.box(HIPS, -4, 4, 13, 14, -3, 3, c.hood);                 // hood top
-  f.box(HIPS, -4, 4, 11, 12, -3, 3, c.white);                // band all round
-  f.box(HIPS, -1, 1, 11, 14, 2, 3, c.light);                 // crest on the front
-  f.box(HIPS, -1, 1, 13, 14, -2, 3, c.light);                // ... running over the top
-  f.box(HIPS, -2, 2, 7, 8, 2, 3, c.white);                   // white muffler under the face
-  f.pair(HIPS, 4, 6, 9, 10, -1, 1, c.hood);                  // hood tails
-  f.pair(HIPS, 5, 6, 10, 11, -1, 1, c.hood);
-  f.box(HIPS, -2, 2, 3, 7, 1, 2, c.light);                   // tunic front
-  f.box(HIPS, -3, 3, 4, 5, -2, 2, c.white);                  // belt
-  f.box(HIPS, -3, 3, 2, 7, -3, -2, c.dark);                  // cape
-  f.box(HIPS, -4, 4, 2, 3, -3, -2, c.dark);
-  f.pair(HIPS, 3, 4, 2, 3, -2, 2, c.hood);                   // tunic skirt corners
+  const c = Object.assign({}, SKIN, {
+    hood: '#1C4CC2', light: '#2E9BE6', dark: '#10308A', white: '#E8E8E2', eye: '#2B8FE6',
+    leg: '#E8E8E2', shoe: '#E8E8E2', torso: '#1C4CC2', skirt: '#1C4CC2', sleeve: '#1C4CC2', cuff: '#2E9BE6'
+  });
+  const f = figure(); body(f, c);
+  f.rbox(HIPS, -8, 8, 11, 25, -7, 7, c.hood);               // the hood is the head
+  f.box(HIPS, -6, 6, 12, 20, 6, 7, null);                   // face opening, one voxel deep
+  face(f, c);
+  f.box(HIPS, -6, 6, 19, 20, 5, 6, c.hood);                 // hood's inner brow
+  f.box(HIPS, -6, -5, 14, 19, 5, 6, c.dark); f.box(HIPS, 5, 6, 14, 19, 5, 6, c.dark);   // dark locks by the face
+  f.rbox(HIPS, -8, 8, 20, 21, -7, 7, c.white, false);      // white band round the hood ...
+  f.box(HIPS, -7, 7, 20, 21, 6, 8, c.white);                // crest: the band's front bar ...
+  f.box(HIPS, -3, 3, 21, 25, 7, 8, c.white);                // ... white frame ...
+  f.box(HIPS, -2, 2, 22, 24, 7, 8, c.light);                // ... light-blue jewel
+  f.box(HIPS, -1, 1, 25, 26, -2, 6, c.white);               // ridge over the top
+  f.box(HIPS, -6, 6, 20, 21, -8, -7, c.white);              // and a white T on the back
+  f.box(HIPS, -1, 1, 21, 25, -8, -7, c.white);
+  f.pair(HIPS, 8, 11, 15, 17, -1, 1, c.hood);               // hood tails: out ...
+  f.pair(HIPS, 11, 13, 15, 19, -1, 1, c.hood);              // ... and up
+  f.pair(HIPS, 11, 13, 18, 19, -1, 1, c.dark);
+  f.box(HIPS, -6, 6, 10, 12, 3, 5, c.light);                // collar, zigzag edged
+  for (let x = -6; x < 6; x++) if (((x + 6) % 4) < 2) f.px(HIPS, x, 10, 4, c.hood);
+  f.front(HIPS, -1, 1, 3, 10, c.light);                     // robe opening
+  f.box(HIPS, -8, 8, 2, 3, -6, 6, c.dark);                  // hem
+  f.back(HIPS, -5, 5, 3, 11, c.dark);                       // cape
+  f.back(HIPS, -5, 5, 8, 9, c.light);
   return { name: 'walker-blue', f };
 }
 
-// Red: mage — salmon hair, wide dark-red hat with a bent tip, long robe with a dark-red front and white collar.
+// Red: mage.
 function red() {
-  const c = {
-    hat: '#E8503E', dark: '#A8202C', hair: '#F0684E', skin: '#F4C3A6', eye: '#8C1C24', white: '#FAF6F0',
-    leg: '#F4C3A6', shoe: '#FAF6F0', torso: '#EC5A46', sleeve: '#EC5A46', hand: '#F4C3A6'
-  };
-  const f = figure(); base(f, c);
-  f.px(HIPS, -3, 10, 2, c.hair); f.px(HIPS, 0, 10, 2, c.hair); f.px(HIPS, 2, 10, 2, c.hair);   // fringe
-  f.box(HIPS, -4, 4, 4, 7, -3, -2, c.hair);                  // hair down the back
-  f.pair(HIPS, 4, 5, 8, 11, -2, 1, c.hair);                  // side locks
-  f.box(HIPS, -5, 5, 13, 14, -4, 3, c.dark);                 // brim
-  f.box(HIPS, -3, 3, 14, 15, -3, 2, c.dark);                 // band
-  f.box(HIPS, -3, 3, 15, 16, -3, 2, c.hat);
-  f.box(HIPS, -2, 2, 16, 18, -2, 1, c.hat);
-  f.box(HIPS, -2, 1, 18, 19, -2, 0, c.hat);
-  f.box(HIPS, -3, -1, 19, 20, -2, -1, c.hat);                // tip bends over
-  f.box(HIPS, -2, 2, 6, 7, 1, 2, c.white);                   // collar
-  f.box(HIPS, -1, 1, 3, 6, 1, 2, c.dark);                    // robe front
-  f.box(HIPS, -4, 4, 1, 3, -3, 2, c.torso);                  // robe skirt (legs swing inside it)
-  f.box(HIPS, -4, 4, 1, 2, -3, 2, c.dark);                   // hem
-  f.box(HIPS, -1, 1, 1, 3, 2, 3, c.dark);                    // front slit panel
-  f.box(ARM_P, 3, 5, 4, 5, -1, 1, c.dark); f.box(ARM_N, -5, -3, 4, 5, -1, 1, c.dark);   // cuffs
+  const c = Object.assign({}, SKIN, {
+    hat: '#9C0E1C', band: '#BC1A28', hair: '#E2503B', eye: '#7E0B16',
+    robe: '#DE4636', dark: '#9C0E1C', white: '#ECE6DE', leg: '#EBB693', shoe: '#ECE6DE', torso: '#DE4636', skirt: '#DE4636',
+    sleeve: '#DE4636', cuff: '#ECE6DE'
+  });
+  const f = figure(); body(f, c);
+  f.rbox(HIPS, -7, 7, 12, 23, -6, 6, c.hair);
+  face(f, c);
+  f.box(HIPS, -6, 6, 19, 21, 5, 6, c.hair);                 // fringe, parted at the sides
+  for (const [x, y] of [[-6, 18], [-6, 17], [-5, 18], [5, 18], [5, 17], [4, 18]]) f.px(HIPS, x, y, 5, c.hair);
+  f.pair(HIPS, 7, 8, 12, 19, -4, 3, c.hair);                // hair puffing out at the sides
+  f.pair(HIPS, 8, 9, 13, 17, -2, 2, c.hair);
+  f.box(HIPS, -7, 7, 6, 12, -6, -4, c.hair);                // long hair down the back
+  f.disc(HIPS, 0, -0.5, 11, 22, 24, c.hat);                 // brim with a lighter band
+  f.disc(HIPS, 0, -0.5, 11, 23, 24, c.band);
+  f.disc(HIPS, 0, -0.5, 9.5, 23, 24, c.hat);
+  f.disc(HIPS, 0, -0.5, 7, 24, 27, c.hat);                  // tiered crown, leaning back
+  f.disc(HIPS, 0, -0.5, 7.01, 24, 25, c.band);
+  f.disc(HIPS, -0.5, -1.5, 5.2, 27, 30, c.hat);
+  f.disc(HIPS, -1, -2.5, 3.6, 30, 32, c.hat);
+  f.box(HIPS, -3, 0, 32, 34, -4, -1, c.hat);                // tip, bending over
+  f.box(HIPS, -6, -2, 34, 35, -4, -2, c.hat);
+  f.px(HIPS, -6, 33, -3, c.hat);
+  f.box(HIPS, -6, 6, 10, 12, 3, 5, c.white);                // white collar, zigzag edged
+  for (let x = -6; x < 6; x++) if (((x + 6) % 4) >= 2) f.px(HIPS, x, 10, 4, c.robe);
+  f.front(HIPS, -2, 2, 3, 10, c.dark);                      // robe opening
+  f.box(HIPS, -8, 8, 2, 4, -6, 6, c.dark);                  // hem
   return { name: 'walker-red', f };
 }
 
-// Gold: horned warrior — gold helmet with white horns, brown hair, gold armour with a brown check, bare arms.
+// Gold: horned warrior.
 function gold() {
-  const c = {
-    helm: '#E9A62C', dark: '#9A5316', horn: '#FAF6EE', hair: '#9A5316', skin: '#F2BC9C', eye: '#5A2E0E',
-    leg: '#FAF6EE', shoe: '#9A5316', torso: '#E9A62C', sleeve: '#F2BC9C', hand: '#F2BC9C', white: '#FAF6EE'
-  };
-  const f = figure(); base(f, c);
-  f.box(HIPS, -4, 4, 11, 14, -3, 3, c.helm);                 // helmet
-  f.box(HIPS, -4, 4, 11, 12, -3, 3, c.dark);                 // rim
-  f.box(HIPS, -1, 1, 12, 14, 2, 3, c.dark);                  // nose guard / crest
-  f.box(HIPS, -1, 1, 14, 15, -2, 2, c.helm);                 // top knob
-  f.pair(HIPS, 4, 5, 12, 13, -1, 1, c.horn);                 // horns: out, then up
-  f.pair(HIPS, 5, 6, 12, 15, -1, 1, c.horn);
-  f.box(HIPS, -4, 4, 9, 11, -3, -2, c.hair);                 // hair at the back
-  for (let x = -3; x < 3; x++) for (let y = 3; y < 7; y++) {  // checked armour, front and back
-    if ((x + y) & 1) { f.px(HIPS, x, y, 1, c.dark); f.px(HIPS, x, y, -2, c.dark); }
-  }
-  f.box(HIPS, -1, 1, 5, 7, 1, 2, c.white);                   // strap crossing the chest
-  f.box(HIPS, -3, 3, 3, 4, -2, 2, c.dark);                   // belt
-  f.pair(HIPS, 1, 4, 2, 3, -2, 2, c.helm);                   // tassets
-  f.box(ARM_P, 3, 5, 6, 7, -1, 1, c.helm); f.box(ARM_N, -5, -3, 6, 7, -1, 1, c.helm);   // shoulder plates
+  const c = Object.assign({}, SKIN, {
+    helm: '#D98E08', light: '#F2AA1A', dark: '#A76505', horn: '#D6D3C8', hornTip: '#F0EEE6', hair: '#5E320C', eye: '#3E1E06',
+    white: '#E4E1D8', leg: '#E4E1D8', shoe: '#7A4410', torso: '#D98E08', skirt: '#D98E08',
+    sleeve: '#D98E08', cuff: '#E4E1D8'
+  });
+  const f = figure(); body(f, c);
+  f.rbox(HIPS, -7, 7, 12, 23, -6, 6, c.hair);
+  face(f, c);
+  f.box(HIPS, -6, -5, 15, 19, 5, 6, c.hair); f.box(HIPS, 5, 6, 15, 19, 5, 6, c.hair);   // sideburns
+  f.box(HIPS, -5, -2, 18, 19, 5, 6, c.hair); f.box(HIPS, 2, 5, 18, 19, 5, 6, c.hair);   // thick brows
+  f.rbox(HIPS, -8, 8, 19, 25, -7, 7, c.helm);               // helmet
+  f.rbox(HIPS, -8, 8, 19, 20, -7, 7, c.dark, false);        // rim
+  f.rbox(HIPS, -6, 6, 25, 27, -5, 5, c.light);              // dome
+  f.box(HIPS, -1, 1, 20, 27, 7, 8, c.light);                // ridge down the front
+  f.box(HIPS, -1, 1, 27, 28, -3, 4, c.light);
+  f.pair(HIPS, 8, 10, 21, 23, -1, 1, c.horn);               // horns: out, up, and a knob turned out
+  f.pair(HIPS, 10, 12, 21, 28, -1, 1, c.horn);
+  f.pair(HIPS, 12, 13, 26, 29, -1, 1, c.hornTip);
+  f.pair(HIPS, 10, 12, 28, 29, -1, 1, c.hornTip);
+  f.box(HIPS, -7, 7, 12, 19, -7, -6, c.hair);               // hair at the back, below the helmet
+  f.front(HIPS, -3, 3, 10, 11, c.white);                    // chest band
+  f.box(HIPS, -6, 6, 7, 8, -4, 4, c.dark);                  // belt
+  f.front(HIPS, -1, 1, 7, 8, c.light);                      // buckle
+  f.box(HIPS, -8, 8, 2, 3, -6, 6, c.dark);                  // hem
+  for (const [j, x0] of [[ARM_P, 7], [ARM_N, -10]]) f.rbox(j, x0 - 1, x0 + 4, 10, 13, -3, 3, c.light);   // pauldrons
   return { name: 'walker-gold', f };
 }
 
@@ -136,31 +199,50 @@ const srgbToLinear = h => [1, 3, 5].map(i => {
   return c <= 0.04045 ? c / 12.92 : Math.pow((c + 0.055) / 1.055, 2.4);
 });
 
-const DIRS = [
-  { n: [1, 0, 0], q: [[1, 0, 0], [1, 1, 0], [1, 1, 1], [1, 0, 1]] },
-  { n: [-1, 0, 0], q: [[0, 0, 0], [0, 0, 1], [0, 1, 1], [0, 1, 0]] },
-  { n: [0, 1, 0], q: [[0, 1, 0], [0, 1, 1], [1, 1, 1], [1, 1, 0]] },
-  { n: [0, -1, 0], q: [[0, 0, 0], [1, 0, 0], [1, 0, 1], [0, 0, 1]] },
-  { n: [0, 0, 1], q: [[0, 0, 1], [1, 0, 1], [1, 1, 1], [0, 1, 1]] },
-  { n: [0, 0, -1], q: [[0, 0, 0], [0, 1, 0], [1, 1, 0], [1, 0, 0]] }
-];
-
+// Greedy meshing per joint: for each face direction and slice, merge same-coloured exposed faces into rectangles.
 function mesh(parts) {
   const pos = [], nor = [], col = [], jnt = [], idx = [];
   const lin = new Map();
+  const linear = hex => { if (!lin.has(hex)) lin.set(hex, srgbToLinear(hex)); return lin.get(hex); };
   parts.forEach((vox, j) => {
-    for (const [k, hex] of vox) {
-      const [x, y, z] = k.split(',').map(Number);
-      if (!lin.has(hex)) lin.set(hex, srgbToLinear(hex));
-      const c = lin.get(hex);
-      for (const d of DIRS) {
-        if (vox.has((x + d.n[0]) + ',' + (y + d.n[1]) + ',' + (z + d.n[2]))) continue;
-        const b = pos.length / 3;
-        for (const q of d.q) {
-          pos.push((x + q[0]) * V, (y + q[1]) * V, (z + q[2]) * V);
-          nor.push(...d.n); col.push(...c); jnt.push(j, 0, 0, 0);
+    if (!vox.size) return;
+    const lo = [Infinity, Infinity, Infinity], hi = [-Infinity, -Infinity, -Infinity];
+    for (const k of vox.keys()) k.split(',').map(Number).forEach((v, a) => { lo[a] = Math.min(lo[a], v); hi[a] = Math.max(hi[a], v); });
+    const get = p => vox.get(p[0] + ',' + p[1] + ',' + p[2]);
+    for (let d = 0; d < 3; d++) {
+      const u = (d + 1) % 3, v = (d + 2) % 3;
+      for (const sign of [1, -1]) {
+        const n = [0, 0, 0]; n[d] = sign;
+        for (let s = lo[d]; s <= hi[d]; s++) {
+          const W = hi[u] - lo[u] + 1, H = hi[v] - lo[v] + 1;
+          const mask = new Array(W * H).fill(null);
+          const p = [0, 0, 0], q = [0, 0, 0];
+          for (let b = 0; b < H; b++) for (let a = 0; a < W; a++) {
+            p[d] = s; p[u] = lo[u] + a; p[v] = lo[v] + b;
+            const c = get(p);
+            if (!c) continue;
+            q[0] = p[0]; q[1] = p[1]; q[2] = p[2]; q[d] += sign;
+            if (!get(q)) mask[b * W + a] = c;
+          }
+          for (let b = 0; b < H; b++) for (let a = 0; a < W; a++) {
+            const c = mask[b * W + a];
+            if (!c) continue;
+            let w = 1; while (a + w < W && mask[b * W + a + w] === c) w++;
+            let h = 1;
+            grow: while (b + h < H) { for (let k = 0; k < w; k++) if (mask[(b + h) * W + a + k] !== c) break grow; h++; }
+            for (let y = 0; y < h; y++) for (let k = 0; k < w; k++) mask[(b + y) * W + a + k] = null;
+            const plane = s + (sign > 0 ? 1 : 0);
+            const corner = (da, db) => { const r = [0, 0, 0]; r[d] = plane; r[u] = lo[u] + a + da; r[v] = lo[v] + b + db; return r; };
+            let quad = [corner(0, 0), corner(w, 0), corner(w, h), corner(0, h)];
+            // orient so the winding faces along n
+            const e1 = quad[1].map((x, i) => x - quad[0][i]), e2 = quad[2].map((x, i) => x - quad[0][i]);
+            const cr = [e1[1] * e2[2] - e1[2] * e2[1], e1[2] * e2[0] - e1[0] * e2[2], e1[0] * e2[1] - e1[1] * e2[0]];
+            if (cr[d] * sign < 0) quad = quad.reverse();
+            const base = pos.length / 3, lc = linear(c);
+            for (const r of quad) { pos.push(r[0] * V, r[1] * V, r[2] * V); nor.push(...n); col.push(...lc); jnt.push(j, 0, 0, 0); }
+            idx.push(base, base + 1, base + 2, base, base + 2, base + 3);
+          }
         }
-        idx.push(b, b + 1, b + 2, b, b + 2, b + 3);
       }
     }
   });
