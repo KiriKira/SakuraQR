@@ -1,11 +1,11 @@
 // Smoke test, no dependencies: node test/smoke.js [outDir]
 // Encodes a URL, grows the tree, exports 3MF + STL zip in both layouts (one piece; tree upside down + separate base),
 // checks every part is a closed 2-manifold (every edge on exactly two faces, one fan round every vertex, also after
-// welding vertices by position as STL readers do) and the peg fits the socket, and writes the top view as a PPM image so a
-// decoder can confirm it scans.
+// welding vertices by position as STL readers do) and the peg fits the socket, checks the GLB for animation, and writes
+// the top view as a PPM image so a decoder can confirm it scans.
 const fs = require('fs'), path = require('path');
 const QR = require('../js/qr.js');
-const { buildCanopyTree, shadowedTops, shadowedLight } = require('../js/tree.js');
+const { buildCanopyTree, shadowedTops, shadowedLight, perspectiveWarp } = require('../js/tree.js');
 const SakuraExport = require('../js/export.js');
 
 const out = process.argv[2] || path.join(__dirname, 'out');
@@ -78,6 +78,45 @@ for (const [onCanopy, s, shift] of [[true, 4, 0], [false, 4, 0], [false, 1.5, 0]
   console.log('light modules in a top-left lamp\'s shadow: centred tree', a, ', corner tree', b, '; corner tree\'s centre of mass', com.map(v => (P - v).toFixed(1)).join(' / '), 'cells inside the plate edge');
   if (!(b * 3 < a)) fail('the corner tree does not move the shadow off the code');
   if (Math.max(...com) > P - 3) fail('corner tree tips over');
+}
+
+// GLB for animation: a valid container, every accessor in range, faces wound the way their normals point, and all
+// primitives together a closed surface (welded by position); with the perspective warp, and with the canopy past the plate
+for (const [label, m, s, warp] of [['canopy, 4 mm', model, 4, null], ['plate, 1.5 mm, warped', plateTree(0), 1.5, true], ['corner, 1.5 mm, warped', plateTree(CORNER), 1.5, true]]) {
+  const glb = SakuraExport.toGLB(m, s, colours, null, { warp: warp ? perspectiveWarp(m, s, 800) : null, shade: cb => 1 + ((cb.c + cb.r + cb.k) % 3 - 1) * 0.08 });
+  fs.writeFileSync(path.join(out, 'sakura-' + label.replace(/[^a-z0-9.]+/g, '-') + '.glb'), glb);
+  const dv = new DataView(glb.buffer, glb.byteOffset, glb.byteLength);
+  if (dv.getUint32(0, true) !== 0x46546C67 || dv.getUint32(4, true) !== 2 || dv.getUint32(8, true) !== glb.length) { fail('GLB header (' + label + ')'); continue; }
+  const jsLen = dv.getUint32(12, true), json = JSON.parse(Buffer.from(glb.subarray(20, 20 + jsLen)).toString('utf8'));
+  const binLen = dv.getUint32(20 + jsLen, true), bin = glb.subarray(28 + jsLen, 28 + jsLen + binLen);
+  if (dv.getUint32(16, true) !== 0x4E4F534A || dv.getUint32(24 + jsLen, true) !== 0x004E4942 || jsLen % 4 || binLen < json.buffers[0].byteLength) fail('GLB chunks (' + label + ')');
+  const read = i => {
+    const a = json.accessors[i], v = json.bufferViews[a.bufferView], n = a.count * (a.type === 'VEC3' ? 3 : 1);
+    if (v.byteOffset % 4 || v.byteOffset + v.byteLength > binLen) fail('bufferView out of range (' + label + ')');
+    const T = { 5126: Float32Array, 5125: Uint32Array, 5123: Uint16Array }[a.componentType];
+    return new T(bin.buffer.slice(bin.byteOffset + v.byteOffset, bin.byteOffset + v.byteOffset + n * T.BYTES_PER_ELEMENT));
+  };
+  const all = { verts: [], tris: [] }, box = [Infinity, Infinity, Infinity, -Infinity, -Infinity, -Infinity];
+  let misWound = 0;
+  for (const mesh of json.meshes) for (const pr of mesh.primitives) {
+    const P = read(pr.attributes.POSITION), Nn = read(pr.attributes.NORMAL), I = read(pr.indices), a = json.accessors[pr.attributes.POSITION];
+    if (read(pr.attributes.COLOR_0).some(x => !(x >= 0 && x <= 1))) fail('COLOR_0 outside 0..1 (' + label + ')');
+    for (let j = 0; j < 3; j++) for (let i = j; i < P.length; i += 3) { if (P[i] < a.min[j] || P[i] > a.max[j]) fail('POSITION outside min/max (' + label + ')'); box[j] = Math.min(box[j], P[i]); box[j + 3] = Math.max(box[j + 3], P[i]); }
+    if (I.some(x => x >= P.length / 3)) fail('index out of range (' + label + ')');
+    for (let t = 0; t < I.length; t += 3) {
+      const [p, q, r] = [I[t] * 3, I[t + 1] * 3, I[t + 2] * 3], u = [0, 1, 2].map(j => P[q + j] - P[p + j]), v = [0, 1, 2].map(j => P[r + j] - P[p + j]);
+      const c = [u[1] * v[2] - u[2] * v[1], u[2] * v[0] - u[0] * v[2], u[0] * v[1] - u[1] * v[0]];
+      if (c[0] * Nn[p] + c[1] * Nn[p + 1] + c[2] * Nn[p + 2] <= 0) misWound++;
+    }
+    const o = all.verts.length / 3;
+    for (const x of P) all.verts.push(x * 1000);   // back to mm for audit's welding tolerance
+    for (const x of I) all.tris.push(x + o);
+  }
+  const au = SakuraExport.audit(all), info = json.nodes[0].extras.sakuraqr;
+  console.log('GLB, ' + label + ':', (glb.length / 1024).toFixed(0), 'KB,', json.meshes.map(x => x.name).join('/') + ',', au.triangles, 'triangles, open edges', au.open, ', mis-wound', misWound, '; bbox', box.map(x => (x * 1000).toFixed(1)).join(' '), 'mm');
+  if (au.open || misWound) fail('GLB surface not closed or wound inwards (' + label + ')');
+  // the plate's bottom on y = 0, centred (the perspective warp widens it by a fraction of a percent, as in the print)
+  if (Math.abs(box[1]) > 1e-7 || Math.abs(box[0] / (-m.P * s / 2000) - 1) > 0.005 || info.plate.cells !== m.P || info.grid.surface.length !== m.N) fail('GLB placement or info (' + label + ')');
 }
 
 // top view (one pixel block per module) as PPM
