@@ -306,6 +306,16 @@ input[type=range] { width: 100%; accent-color: var(--accent); }
           <button type="button" class="btn" id="dlglb">下载 GLB（动画 · three.js）</button>
         </div>
         <div class="row">
+          <span class="label">设计参数</span>
+          <div class="exports">
+            <button type="button" class="btn" id="dldesign">下载设计参数</button>
+            <button type="button" class="btn" id="opendesign">导入设计参数</button>
+            <input type="file" id="designFile" accept=".json,.glb,application/json,model/gltf-binary" hidden>
+          </div>
+          <p class="sub" id="designInfo"></p>
+          <p class="sub">网址和所有设置存成一个小文件，以后导入就能长出同一棵树。也可以直接导入本页导出的 GLB。</p>
+        </div>
+        <div class="row">
           <span class="label">打印方式</span>
           <div class="seg" id="layout">
             <button type="button" id="layout-one" data-v="one-piece" aria-pressed="true">正放 · 一体</button>

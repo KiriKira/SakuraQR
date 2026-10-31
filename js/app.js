@@ -573,25 +573,82 @@
   function busy(btn, fn) {
     if (!model) return;
     const label = btn.textContent; btn.disabled = true; btn.textContent = '正在生成…';
-    setTimeout(() => {
-      try { fn(); $('exportInfo').textContent = '已生成：' + lastExport; }
+    setTimeout(async () => {
+      try { await fn(); $('exportInfo').textContent = '已生成：' + lastExport; }
       catch (e) { $('exportInfo').textContent = '导出失败：' + e.message; }
       finally { btn.disabled = false; btn.textContent = label; }
     }, 30);
   }
   let lastExport = '';
-  $('dl3mf').addEventListener('click', e => busy(e.currentTarget, () => {
+
+  // ---------- design parameters: everything that decides the exported files, to grow the same tree again ----------
+  const DESIGN_KEYS = ['ecc', 'upper', 'mask', 'onCanopy', 'place', 'persp', 'perspDist', 'verUp', 'dome', 'module', 'trunk', 'crown', 'squash', 'lobes', 'puff', 'rough', 'ledge', 'wood', 'pink', 'light', 'seedAdd', 'layout', 'clear'];
+  const designParams = () => ({ app: 'SakuraQR', text: $('txt').value.trim(), encoded: state.encoded, settings: Object.fromEntries(DESIGN_KEYS.map(k => [k, state[k]])) });
+  $('dldesign').addEventListener('click', e => busy(e.currentTarget, () => {
+    download(baseName() + '-design.json', JSON.stringify(designParams(), null, 2) + '\n', 'application/json');
+    lastExport = baseName() + '-design.json';
+  }));
+  // a design file from dldesign, or a GLB from dlglb (its root node's extras carry the text and the settings)
+  function readDesign(buf) {
+    const u8 = new Uint8Array(buf), dv = new DataView(buf);
+    if (u8.length > 20 && dv.getUint32(0, true) === 0x46546C67) {
+      const json = JSON.parse(new TextDecoder().decode(u8.subarray(20, 20 + dv.getUint32(12, true))));
+      const ex = json.nodes && json.nodes[0] && json.nodes[0].extras;
+      if (!ex || !ex.settings) throw new Error('这个 GLB 里没有设计参数（只有本页导出的 GLB 才有）');
+      return { text: ex.text, settings: ex.settings };
+    }
+    const d = JSON.parse(new TextDecoder().decode(u8));
+    if (!d || typeof d.text !== 'string' || !d.settings) throw new Error('不是本页下载的设计参数文件');
+    return d;
+  }
+  const SEGS = ['ecc', 'ledge', 'place', 'verUp', 'layout', 'wood'], CHECKS = { upper: 'upper', onCanopy: 'oncanopy', persp: 'persp' }, SWATCHES = { pink: ['pinks', PINKS], light: ['lights', LIGHTS] };
+  const RANGES = ['module', 'trunk', 'crown', 'squash', 'lobes', 'rough', 'puff', 'dome', 'perspDist', 'mask', 'clear'];
+  // set every control as well as state; returns the settings a control could not take (out of a slider's range)
+  function applyDesign(d) {
+    const s = d.settings, off = [];
+    $('txt').value = d.text;
+    for (const k of DESIGN_KEYS) {
+      if (!(k in s)) continue;
+      const v = s[k];
+      if (SEGS.includes(k)) {
+        const b = [...$(k).querySelectorAll('button')].find(x => x.dataset.v === String(v));
+        if (!b) { off.push(k); continue; }
+        state[k] = b.dataset.v; $(k).querySelectorAll('button').forEach(x => x.setAttribute('aria-pressed', String(x === b)));
+      } else if (k in CHECKS) {
+        state[k] = !!v; $(CHECKS[k]).checked = !!v;
+      } else if (k in SWATCHES) {
+        const [wrap, table] = SWATCHES[k];
+        if (!(v in table)) { off.push(k); continue; }
+        state[k] = v; $(wrap).querySelectorAll('.sw').forEach(x => x.setAttribute('aria-pressed', String(x.id === wrap + '-' + v)));
+      } else if (RANGES.includes(k)) {
+        const el = $(k); el.value = v; el.dispatchEvent(new Event('input'));   // updates state and the label
+        if (state[k] !== +v) off.push(k);
+      } else state[k] = v;   // seedAdd
+    }
+    updateLayout();
+    schedule();
+    return off;
+  }
+  $('opendesign').addEventListener('click', () => $('designFile').click());
+  $('designFile').addEventListener('change', async e => {
+    const f = e.target.files[0]; e.target.value = '';
+    if (!f) return;
+    try {
+      const off = applyDesign(readDesign(await f.arrayBuffer()));
+      $('designInfo').textContent = '已导入 ' + f.name + '。' + (off.length ? '这几项超出了本页的范围，用的是最接近的值：' + off.join('、') + '。' : '');
+    } catch (err) { $('designInfo').textContent = '导入失败：' + err.message; }
+  });
+  $('dl3mf').addEventListener('click', e => busy(e.currentTarget, async () => {
     const parts = exportParts();
-    download(baseName() + '.3mf', SakuraExport.to3MF(parts, 'SakuraQR ' + state.encoded), 'model/3mf');
+    download(baseName() + '.3mf', await SakuraExport.to3MF(parts, 'SakuraQR ' + state.encoded), 'model/3mf');
     lastExport = baseName() + '.3mf（' + parts.map(p => p.name).join('、') + '）';
   }));
-  $('dlstl').addEventListener('click', e => busy(e.currentTarget, () => {
+  $('dlstl').addEventListener('click', e => busy(e.currentTarget, async () => {
     const parts = exportParts();
-    download(baseName() + '-stl.zip', SakuraExport.toSTLZip(parts, baseName()), 'application/zip');
+    download(baseName() + '-stl.zip', await SakuraExport.toSTLZip(parts, baseName()), 'application/zip');
     lastExport = baseName() + '-stl.zip（' + parts.length + ' 个 STL）';
   }));
   // the tree as printed, for animation (three.js, Blender): see SakuraExport.toGLB
-  const DESIGN_KEYS = ['ecc', 'upper', 'mask', 'onCanopy', 'place', 'persp', 'perspDist', 'verUp', 'dome', 'module', 'trunk', 'crown', 'squash', 'lobes', 'puff', 'rough', 'ledge', 'wood', 'pink', 'light', 'seedAdd'];
   $('dlglb').addEventListener('click', e => busy(e.currentTarget, () => {
     const merge = state.wood === 'brown' ? null : { wood: 'light' };
     const glb = SakuraExport.toGLB(model, S(), exportColours(), merge, {
