@@ -1,0 +1,365 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="description" content="把一个短网址种成一棵可 3D 打印的方块樱花树，从正上方看树冠就是可扫描的二维码。">
+<title>SakuraQR 樱花二维码树</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Noto+Serif+SC:wght@600;800&family=Noto+Sans+SC:wght@400;500;700&family=IBM+Plex+Mono:wght@400;500&display=swap">
+<style>
+html { -webkit-text-size-adjust: 100%; }
+body { margin: 0; }
+[hidden] { display: none !important; }
+img { max-width: 100%; }
+
+/* Layout: workbench — 3D stage + scanner readout on the left, growth controls on the right; stacks on phones */
+:root {
+  --bg: #FBF8F9; --surface: #FFFFFF; --stage: #EFE8EC; --ink: #2A1D24; --muted: #776470; --line: #E9DEE3;
+  --accent: #C23C6B; --accent-soft: #F9E3EB; --ok: #2E8549; --ok-soft: #E2F2E6; --bad: #B4472F; --bad-soft: #F9E5DF; --warn: #8F6210; --warn-soft: #F7EDD6;
+  --f-display: "Noto Serif SC", "Songti SC", "STSong", serif;
+  --f-body: "Noto Sans SC", "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei", system-ui, sans-serif;
+  --f-mono: "IBM Plex Mono", ui-monospace, "SF Mono", Menlo, monospace;
+  --r: 10px;
+}
+@media (prefers-color-scheme: dark) { :root:not([data-theme="light"]) {
+  --bg: #141013; --surface: #1D171B; --stage: #2A2228; --ink: #F3E9EE; --muted: #A9949F; --line: #33282E;
+  --accent: #F07BA3; --accent-soft: #3B2230; --ok: #6DCB88; --ok-soft: #1B3224; --bad: #F18D72; --bad-soft: #3B231D; --warn: #E6B65A; --warn-soft: #362A15; color-scheme: dark; } }
+:root[data-theme="dark"] {
+  --bg: #141013; --surface: #1D171B; --stage: #2A2228; --ink: #F3E9EE; --muted: #A9949F; --line: #33282E;
+  --accent: #F07BA3; --accent-soft: #3B2230; --ok: #6DCB88; --ok-soft: #1B3224; --bad: #F18D72; --bad-soft: #3B231D; --warn: #E6B65A; --warn-soft: #362A15; color-scheme: dark; }
+
+* { box-sizing: border-box; }
+body { background: var(--bg); color: var(--ink); font-family: var(--f-body); font-size: 15px; line-height: 1.6; }
+.wrap { max-width: 1180px; margin: 0 auto; padding-inline: 16px; padding-block: 20px 48px; display: grid; gap: 22px; }
+header { display: grid; gap: 6px; }
+h1 { font-family: var(--f-display); font-weight: 800; font-size: clamp(1.7rem, 4.6vw, 2.5rem); line-height: 1.15; margin: 0; letter-spacing: .01em; text-wrap: balance; }
+h1 em { font-style: normal; color: var(--accent); }
+.lede { margin: 0; color: var(--muted); max-width: 64ch; }
+h2 { font-family: var(--f-display); font-weight: 600; font-size: 1.15rem; margin: 0; text-wrap: balance; }
+.label { font-size: .74rem; font-weight: 700; letter-spacing: .08em; color: var(--muted); }
+.mono { font-family: var(--f-mono); font-variant-numeric: tabular-nums; }
+
+.layout { display: grid; gap: 18px; grid-template-columns: minmax(0, 1fr); }
+@media (min-width: 900px) { .layout { grid-template-columns: minmax(0, 1.2fr) minmax(0, 1fr); align-items: start; } }
+.stagecol { display: grid; gap: 12px; min-width: 0; }
+.viewer { position: relative; width: 100%; aspect-ratio: 1 / 1; max-width: 100%; max-height: 74vh; background: var(--stage); border-radius: var(--r); overflow: hidden; touch-action: none; }
+.viewer canvas { display: block; width: 100%; height: 100%; }
+.viewtabs { position: absolute; top: 10px; left: 10px; display: flex; gap: 2px; padding: 3px; background: color-mix(in srgb, var(--surface) 88%, transparent); border: 1px solid var(--line); border-radius: 999px; backdrop-filter: blur(6px); }
+.viewtabs button { border: 0; background: transparent; color: var(--muted); font: 500 .82rem var(--f-body); padding: 5px 11px; border-radius: 999px; cursor: pointer; }
+.viewtabs button[aria-pressed="true"] { background: var(--ink); color: var(--bg); }
+.hint { position: absolute; bottom: 10px; left: 12px; right: 12px; font-size: .76rem; color: var(--muted); pointer-events: none; }
+.loading { position: absolute; inset: 0; display: grid; place-items: center; color: var(--muted); font-size: .9rem; text-align: center; padding: 20px; }
+
+.scan { display: grid; grid-template-columns: 112px minmax(0, 1fr); gap: 14px; align-items: start; background: var(--surface); border: 1px solid var(--line); border-radius: var(--r); padding: 12px; }
+.scan canvas { width: 112px; height: 112px; border-radius: 6px; display: block; background: var(--stage); }
+.scanbody { display: grid; gap: 8px; min-width: 0; }
+.verdicts { display: flex; flex-wrap: wrap; gap: 6px; }
+.chip { display: inline-flex; align-items: center; gap: 6px; font-size: .8rem; font-weight: 500; padding: 3px 10px; border-radius: 999px; background: var(--stage); color: var(--muted); }
+.chip::before { content: ""; width: 7px; height: 7px; border-radius: 50%; background: currentColor; }
+.chip.ok { background: var(--ok-soft); color: var(--ok); }
+.chip.bad { background: var(--bad-soft); color: var(--bad); }
+.chip.warn { background: var(--warn-soft); color: var(--warn); }
+.scanmsg { margin: 0; font-size: .86rem; color: var(--ink); overflow-wrap: anywhere; }
+.scanmsg .mono { color: var(--muted); }
+.two { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px 14px; }
+
+.panel { display: grid; gap: 14px; min-width: 0; }
+fieldset { margin: 0; border: 1px solid var(--line); border-radius: var(--r); background: var(--surface); padding: 14px; display: grid; gap: 12px; min-width: 0; }
+legend { padding: 0 6px; font-family: var(--f-display); font-weight: 600; font-size: 1rem; }
+textarea { width: 100%; resize: vertical; min-height: 64px; font: 15px/1.5 var(--f-body); color: var(--ink); background: var(--bg); border: 1px solid var(--line); border-radius: 8px; padding: 9px 11px; }
+textarea:focus-visible, button:focus-visible, input:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+.row { display: grid; gap: 4px; }
+.rowhead { display: flex; justify-content: space-between; align-items: baseline; gap: 10px; }
+.rowhead .mono { font-size: .82rem; color: var(--ink); }
+.seg { display: flex; flex-wrap: wrap; gap: 6px; }
+.seg button, .btn { flex: 1 1 auto; min-width: 0; border: 1px solid var(--line); background: var(--bg); color: var(--ink); font: 500 .85rem var(--f-body); padding: 7px 10px; border-radius: 8px; cursor: pointer; }
+.seg button[aria-pressed="true"] { border-color: var(--accent); background: var(--accent-soft); color: var(--accent); }
+.btn { flex: 0 0 auto; }
+.btn:hover, .seg button:hover { border-color: var(--muted); }
+.btn.primary { background: var(--accent); border-color: var(--accent); color: var(--surface); }
+.btn.primary:hover { filter: brightness(1.08); }
+.exports { display: flex; flex-wrap: wrap; gap: 8px; }
+.exports .btn { flex: 1 1 auto; }
+.recoout { font-size: .82rem; color: var(--muted); margin-top: 6px; }
+.recoout .reco { display: flex; gap: 8px; align-items: baseline; margin: 4px 0; color: var(--ink); }
+.recoout .reco .btn { padding: 3px 8px; font-size: .78rem; }
+input[type=range] { width: 100%; accent-color: var(--accent); }
+.swatches { display: flex; gap: 10px; flex-wrap: wrap; align-items: center; }
+.sw { width: 34px; height: 34px; border-radius: 50%; border: 2px solid var(--line); cursor: pointer; padding: 0; }
+.sw[aria-pressed="true"] { border-color: var(--ink); box-shadow: 0 0 0 3px var(--surface) inset; }
+.sub { font-size: .8rem; color: var(--muted); margin: 0; }
+.err { color: var(--bad); font-size: .85rem; margin: 0; }
+.toggle { display: flex; align-items: center; gap: 10px; font-size: .9rem; cursor: pointer; }
+.toggle input { width: 18px; height: 18px; accent-color: var(--accent); }
+
+.stats { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 1px; background: var(--line); border: 1px solid var(--line); border-radius: var(--r); overflow: hidden; }
+.stat { background: var(--surface); padding: 10px 12px; display: grid; gap: 2px; min-width: 0; align-content: start; }
+.stat b { font-family: var(--f-mono); font-weight: 500; font-size: 1.02rem; font-variant-numeric: tabular-nums; }
+.stat span:last-child { font-size: .78rem; color: var(--muted); }
+.palette { display: inline-flex; gap: 4px; align-items: center; }
+.palette i { width: 14px; height: 14px; border-radius: 3px; border: 1px solid var(--line); display: inline-block; }
+
+.notes { display: grid; gap: 14px; }
+.notegrid { display: grid; gap: 14px 22px; grid-template-columns: minmax(0, 1fr); }
+@media (min-width: 760px) { .notegrid { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
+.note { border-top: 2px solid var(--line); padding-top: 10px; display: grid; gap: 4px; align-content: start; }
+.note.key { border-top-color: var(--accent); }
+.note h3 { margin: 0; font-size: .98rem; font-weight: 700; }
+.note p { margin: 0; color: var(--muted); font-size: .9rem; max-width: 64ch; }
+.note p strong { color: var(--ink); font-weight: 500; }
+@media (prefers-reduced-motion: reduce) { * { transition: none !important; } }
+</style>
+</head>
+<body>
+
+<div class="wrap">
+  <header>
+    <span class="label">方块樱花 · 树冠顶层即二维码</span>
+    <h1>一棵从上往下看<em>能扫</em>的方块樱花树</h1>
+    <p class="lede">先按像素画的套路搭一棵方块樱花树：短粗树干在中段分叉，主枝托起几团蓬松的花云。然后只给树冠每一列最顶上的那一格上色：深色码点保持花的颜色，浅色码点染成浅粉高光。树冠盖住的码点印在花尖上，其余的印在底座上，手机离远一点（两米左右）就能扫；也可以把整个码都托在树冠顶上，这样几十厘米外就能扫，只是树冠顶会被压平。下方扫描器会在浏览器里实际解码。</p>
+  </header>
+
+  <div class="layout">
+    <section class="stagecol" aria-label="模型预览">
+      <div class="viewer" id="viewer">
+        <canvas id="gl" aria-label="方块樱花树 3D 预览"></canvas>
+        <div class="viewtabs" role="group" aria-label="视角">
+          <button type="button" id="v-orbit" data-view="orbit" aria-pressed="true">3D</button>
+          <button type="button" id="v-top" data-view="top" aria-pressed="false">正俯视</button>
+          <button type="button" id="v-phone" data-view="phone" aria-pressed="false">手机视角</button>
+        </div>
+        <div class="hint" id="hint">拖动旋转 · 双指或滚轮缩放</div>
+        <div class="loading" id="loading">正在加载 3D 引擎和二维码库…</div>
+      </div>
+
+      <div class="scan" aria-live="polite">
+        <canvas id="scanThumb" width="224" height="224" aria-label="模拟手机相机画面"></canvas>
+        <div class="scanbody">
+          <div class="verdicts">
+            <span class="chip" id="chipOrtho">正俯视</span>
+            <span class="chip" id="chipPhone">手机</span>
+            <span class="chip" id="chipPara">错位</span>
+          </div>
+          <p class="scanmsg" id="scanMsg">等待生成…</p>
+          <p class="scanmsg" id="scanRange"></p>
+          <div class="row">
+            <span class="label">光线</span>
+            <div class="seg" id="simlight">
+              <button type="button" id="simlight-even" data-v="even" aria-pressed="true">均匀散光</button>
+              <button type="button" id="simlight-lamp" data-v="lamp" aria-pressed="false">左上方台灯</button>
+              <button type="button" id="simlight-side" data-v="side" aria-pressed="false">低角度侧灯</button>
+              <button type="button" id="simlight-glare" data-v="glare" aria-pressed="false">顶灯反光</button>
+            </div>
+          </div>
+          <div class="row">
+            <span class="label">镜头</span>
+            <div class="seg" id="lens">
+              <button type="button" id="lens-main" data-v="main" aria-pressed="true">主摄</button>
+              <button type="button" id="lens-x2" data-v="x2" aria-pressed="false">2× 长焦</button>
+              <button type="button" id="lens-x3" data-v="x3" aria-pressed="false">3× 长焦</button>
+            </div>
+          </div>
+          <div class="row">
+            <button type="button" class="btn" id="recoBtn">按当前光线推荐配置</button>
+            <div class="recoout" id="recoOut"></div>
+          </div>
+          <div class="two">
+            <div class="row">
+              <div class="rowhead"><span class="label">手机高度</span><span class="mono" id="distVal">40 cm</span></div>
+              <input type="range" id="dist" min="15" max="300" step="5" value="40">
+            </div>
+            <div class="row">
+              <div class="rowhead"><span class="label">偏离中心</span><span class="mono" id="offVal">0 mm</span></div>
+              <input type="range" id="off" min="0" max="80" step="2" value="0">
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <div class="stats" id="stats"></div>
+    </section>
+
+    <form class="panel" id="panel" autocomplete="off">
+      <fieldset>
+        <legend>内容</legend>
+        <textarea id="txt" rows="2" aria-label="要编码的文字">https://muque.jp</textarea>
+        <div class="row">
+          <div class="rowhead"><span class="label">纠错等级</span><span class="sub" id="verInfo"></span></div>
+          <div class="seg" id="ecc">
+            <button type="button" id="ecc-L" data-v="L" aria-pressed="false">L 7%</button>
+            <button type="button" id="ecc-M" data-v="M" aria-pressed="false">M 15%</button>
+            <button type="button" id="ecc-Q" data-v="Q" aria-pressed="true">Q 25%</button>
+            <button type="button" id="ecc-H" data-v="H" aria-pressed="false">H 30%</button>
+          </div>
+        </div>
+        <div class="row">
+          <span class="label">码的大小</span>
+          <div class="seg" id="verUp">
+            <button type="button" id="verUp-0" data-v="0" aria-pressed="true">最小</button>
+            <button type="button" id="verUp-1" data-v="1" aria-pressed="false">大一号</button>
+            <button type="button" id="verUp-2" data-v="2" aria-pressed="false">大两号</button>
+          </div>
+        </div>
+        <label class="toggle"><input type="checkbox" id="upper" checked> 网址转成大写（字母数字模式，码更小）</label>
+        <p class="sub" id="upperNote"></p>
+        <div class="row">
+          <div class="rowhead"><span class="label">掩码</span><span class="mono" id="maskVal">自动</span></div>
+          <input type="range" id="mask" min="-1" max="7" step="1" value="-1">
+        </div>
+        <p class="err" id="err" hidden></p>
+      </fieldset>
+
+      <fieldset>
+        <legend>树形</legend>
+        <label class="toggle"><input type="checkbox" id="oncanopy"> 整个码放在树冠顶上（码点没有高低差，能近距离扫，树冠顶会被压平）</label>
+        <div class="row" id="rowDome">
+          <div class="rowhead"><span class="label">顶面拱起</span><span class="mono" id="domeVal">6 格</span></div>
+          <input type="range" id="dome" min="0" max="10" step="1" value="6">
+        </div>
+        <label class="toggle"><input type="checkbox" id="persp" checked> 透视补偿（每层方块按高度往码中心缩一点，从设计距离正上方看，高处的码点和底座的码点对齐）</label>
+        <div class="row" id="rowPerspDist">
+          <div class="rowhead"><span class="label">设计距离</span><span class="mono" id="perspDistVal">80 cm</span></div>
+          <input type="range" id="perspDist" min="20" max="150" step="5" value="80">
+          <p class="sub">手机在这个高度正对码中心时完全对齐；近到它的一半、远到无穷远，错位都不超过不补偿时在这个高度的错位。设得太近，远处码点只剩几个像素时容错不够，反而扫不出；模拟里 80 cm 在各个距离都不比不补偿差。</p>
+        </div>
+        <div class="row" id="rowPlace">
+          <span class="label">树的位置</span>
+          <div class="seg" id="place">
+            <button type="button" id="place-centre" data-v="centre" aria-pressed="true">居中</button>
+            <button type="button" id="place-corner" data-v="corner" aria-pressed="false">右下角（避开台灯阴影）</button>
+          </div>
+          <p class="sub" id="placeNote"></p>
+        </div>
+        <div class="two">
+          <div class="row">
+            <div class="rowhead"><span class="label">方块边长</span><span class="mono" id="moduleVal">1.5 mm</span></div>
+            <input type="range" id="module" min="1" max="6" step="0.1" value="1.5">
+            <p class="sub" id="moduleNote"></p>
+          </div>
+          <div class="row">
+            <div class="rowhead"><span class="label">树干高度</span><span class="mono" id="trunkVal">5 格</span></div>
+            <input type="range" id="trunk" min="3" max="16" step="1" value="5">
+          </div>
+          <div class="row">
+            <div class="rowhead"><span class="label">树冠大小</span><span class="mono" id="crownVal">100%</span></div>
+            <input type="range" id="crown" min="0.75" max="1.15" step="0.05" value="1">
+          </div>
+          <div class="row">
+            <div class="rowhead"><span class="label">树冠高低</span><span class="mono" id="squashVal">0.70</span></div>
+            <input type="range" id="squash" min="0.45" max="1" step="0.05" value="0.7">
+          </div>
+          <div class="row">
+            <div class="rowhead"><span class="label">主枝数</span><span class="mono" id="lobesVal">4</span></div>
+            <input type="range" id="lobes" min="3" max="6" step="1" value="4">
+          </div>
+          <div class="row">
+            <div class="rowhead"><span class="label">花团饱满</span><span class="mono" id="puffVal">0.85</span></div>
+            <input type="range" id="puff" min="0.55" max="1.1" step="0.05" value="0.85">
+          </div>
+          <div class="row">
+            <div class="rowhead"><span class="label">表面起伏</span><span class="mono" id="roughVal">1.00</span></div>
+            <input type="range" id="rough" min="0" max="1.6" step="0.1" value="1">
+          </div>
+          <div class="row" style="align-content:end">
+            <button type="button" class="btn" id="reseed">换一棵（同一个码）</button>
+          </div>
+        </div>
+        <div class="row">
+          <span class="label">方块最多悬挑</span>
+          <div class="seg" id="ledge">
+            <button type="button" id="ledge-1" data-v="1" aria-pressed="false">1 格 · 免支撑</button>
+            <button type="button" id="ledge-2" data-v="2" aria-pressed="true">2 格 · 推荐</button>
+            <button type="button" id="ledge-3" data-v="3" aria-pressed="false">3 格 · 需支撑</button>
+          </div>
+          <p class="sub" id="ledgeNote"></p>
+        </div>
+      </fieldset>
+
+      <fieldset>
+        <legend>配色</legend>
+        <div class="row">
+          <div class="rowhead"><span class="label">花色 · 深色码点</span><span class="sub" id="contrastInfo"></span></div>
+          <div class="swatches" id="pinks"></div>
+        </div>
+        <div class="row">
+          <span class="label">高光 · 浅色码点和底座</span>
+          <div class="swatches" id="lights"></div>
+        </div>
+        <div class="row">
+          <span class="label">树干 · 树枝</span>
+          <div class="seg" id="wood">
+            <button type="button" id="wood-brown" data-v="brown" aria-pressed="true">棕色（共 3 色）</button>
+            <button type="button" id="wood-light" data-v="light" aria-pressed="false">同高光色（共 2 色）</button>
+          </div>
+          <p class="sub">树干和树枝藏在树冠下面，从上面看不到，所以可以用深色。只有树冠顶层和底座露出来的格子参与成码。</p>
+        </div>
+      </fieldset>
+
+      <fieldset>
+        <legend>导出</legend>
+        <div class="exports">
+          <button type="button" class="btn primary" id="dl3mf">下载 3MF（多色）</button>
+          <button type="button" class="btn" id="dl3mfc">下载 3MF（全彩树脂 · 按面上色）</button>
+          <button type="button" class="btn" id="dlstl">下载 STL（按颜色分件 · zip）</button>
+          <button type="button" class="btn" id="dlpng">下载俯视图 PNG</button>
+          <button type="button" class="btn" id="dlglb">下载 GLB（动画 · three.js）</button>
+        </div>
+        <div class="row">
+          <span class="label">设计参数</span>
+          <div class="exports">
+            <button type="button" class="btn" id="dldesign">下载设计参数</button>
+            <button type="button" class="btn" id="opendesign">导入设计参数</button>
+            <input type="file" id="designFile" accept=".json,.glb,application/json,model/gltf-binary" hidden>
+          </div>
+          <p class="sub" id="designInfo"></p>
+          <p class="sub">网址和所有设置存成一个小文件，以后导入就能长出同一棵树。也可以直接导入本页导出的 GLB。</p>
+        </div>
+        <div class="row">
+          <span class="label">打印方式</span>
+          <div class="seg" id="layout">
+            <button type="button" id="layout-one" data-v="one-piece" aria-pressed="true">正放 · 一体</button>
+            <button type="button" id="layout-split" data-v="split" aria-pressed="false">倒置 · 底座分开</button>
+          </div>
+          <p class="sub" id="layoutNote"></p>
+        </div>
+        <div class="row">
+          <label class="toggle"><input type="checkbox" id="bottomcode" checked> 底面加一个平面码（保底）</label>
+          <p class="sub">底座下面多垫薄薄一层，印同一个码，从下往上看是正的。平面码没有高低差和影子，顶上的码扫不出来时翻过来扫这一面。这一层只用来显示颜色，不用很厚。</p>
+        </div>
+        <div class="row" id="rowBottomT">
+          <div class="rowhead"><span class="label">底面码厚度</span><span class="mono" id="bottomTVal">0.4 mm</span></div>
+          <input type="range" id="bottomT" min="0.2" max="1.5" step="0.1" value="0.4">
+          <p class="sub">FDM 至少两层（0.2 mm 层高时 0.4 mm）。全彩树脂这类工艺颜色太薄会发浅，深浅对比不够时加厚一点。</p>
+        </div>
+        <div class="row" id="rowClear" hidden>
+          <div class="rowhead"><span class="label">插口间隙（每边）</span><span class="mono" id="clearVal">0.20 mm</span></div>
+          <input type="range" id="clear" min="0.05" max="0.4" step="0.05" value="0.2">
+        </div>
+        <p class="sub" id="exportInfo"></p>
+        <p class="sub">3MF 里每种颜色是同一个物体的一个部件，导入 Bambu Studio 或 PrusaSlicer 后给每个部件指定耗材即可；坐标单位是毫米，底面在 z = 0。全彩树脂这类按表面上色的工艺用“按面上色”的 3MF：整个模型是一个物体，颜色画在每个面上；底面码只是底座底面的颜色，不加厚，打印方式固定为正放 · 一体。俯视图 PNG 可以先用手机扫一下，确认网址能正常打开。GLB 给做动画用，three.js、Blender 都能直接打开，单位是米，Y 轴朝上。</p>
+      </fieldset>
+    </form>
+  </div>
+
+  <section class="notes" aria-label="可行性要点">
+    <h2>可行性要点</h2>
+    <div class="notegrid">
+      <div class="note key"><h3>短网址用字母数字模式</h3><p>网址的协议和域名不区分大小写，<span class="mono">https://muque.jp</span> 写成 <span class="mono">HTTPS://MUQUE.JP</span> 后可以用 QR 的字母数字模式（每两个字符 11 bit），放进最小的 21×21（版本 1），还能用 Q 级 25% 纠错。小写只能用字节模式，同样大小只剩 L 级 7% 纠错。注意：路径区分大小写，带路径的网址不要转大写。iOS 和 Android 自带相机都认大写网址，但老旧的第三方扫码器值得实测一下。</p></div>
+      <div class="note key"><h3>整个码放在树冠顶上（可选）</h3><p>视差来自码点之间的高度差。码眼在底座、码点在树冠顶时，高差有八九厘米，手机得退到 1.5–3 m。码变小以后，四根主枝朝四个角伸，树冠就能把三个码眼一起托住，顶面只微微拱起几格。实测模拟手机在 40 cm 到 1.5 m 都能识别，偏离中心 2 cm 也没问题。</p></div>
+      <div class="note key"><h3>其它“新”二维码为什么不用</h3><p>Micro QR（最小 11×11）、rMQR 长方形码、Aztec、Data Matrix 都更省面积，Aztec 的码眼还在正中心，很适合圆树冠。但手机自带相机和微信基本只认标准 QR，所以这里只在标准 QR 内部做优化：编码模式、版本、纠错和掩码。</p></div>
+      <div class="note key"><h3>台灯放在码的左上方</h3><p>树冠的硬阴影会把浅色码点压暗，解码器会把它们当成深色。QR 只有右下角没有码眼。“树的位置”选“右下角”时，树根放在底座右下角，树冠伸出底座；台灯从左上方照、抬高 45°–70° 时，影子落到底座外面，三个码眼都在亮处。树居中时，模拟里侧面台灯从哪个角度照都扫不出。</p></div>
+      <div class="note"><h3>掩码可以挑</h3><p>QR 有 8 种掩码，任何一种都能扫。自动模式会先挑左上方台灯阴影里浅色码点最少的那种，再挑树冠顶面“零碎孤点”最少的，让粉色花团更成块。手动拖动可以看到同一网址的 8 种图案。QArt 一类艺术码算法能利用填充位控制更多码点，但短网址在版本 1 里几乎没有空闲位，收益很小。</p></div>
+      <div class="note"><h3>打印</h3><p>每个方块要么压在下面的方块上，要么从旁边最多悬挑 2 格，超出的悬空花块直接削掉，所以默认不需要支撑。树冠内部是实心的，切片用稀疏填充即可。浅粉花尖集中在树冠顶面几层，换色次数比底座方案少，但单喷头 AMS 仍然要换几百次，双喷头机基本没有这部分成本。</p></div>
+      <div class="note"><h3>颜色</h3><p>花体用较深的粉，浅色码点染浅粉，正好成为顶面的高光。扫码只看灰度差，深浅两种粉要拉开足够距离，页面会实时显示。树干藏在树冠下，用棕色不影响扫码。</p></div>
+    </div>
+  </section>
+</div>
+
+<script src="js/qr.js"></script>
+<script src="js/tree.js"></script>
+<script src="js/export.js"></script>
+<script src="js/app.js"></script>
+</body>
+</html>
