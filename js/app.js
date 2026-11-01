@@ -653,6 +653,12 @@
     download(baseName() + '.3mf', await SakuraExport.to3MF(parts, 'SakuraQR ' + state.encoded), 'model/3mf');
     lastExport = baseName() + '.3mf（' + parts.map(p => p.name).join('、') + '）';
   }));
+  // full-colour resin: one object, a colour per face; the flat code (if on) is only colour on the plate's bottom
+  $('dl3mfc').addEventListener('click', e => busy(e.currentTarget, async () => {
+    const merge = state.wood === 'brown' ? null : { wood: 'light' };
+    download(baseName() + '-color.3mf', await SakuraExport.toFaceColour3MF(model, S(), exportColours(), merge, 'SakuraQR ' + state.encoded, { warp: model.warp }), 'model/3mf');
+    lastExport = baseName() + '-color.3mf（一个物体，按面上色' + (model.under ? '，底面码只上色、不加厚' : '') + '）';
+  }));
   $('dlstl').addEventListener('click', e => busy(e.currentTarget, async () => {
     const parts = exportParts();
     download(baseName() + '-stl.zip', await SakuraExport.toSTLZip(parts, baseName()), 'application/zip');

@@ -170,6 +170,35 @@ for (const [label, m, s, warp] of [['canopy, 4 mm', model, 4, null], ['plate, 1.
   fs.writeFileSync(path.join(out, 'bottomview.ppm'), Buffer.concat([Buffer.from(`P6 ${W} ${W} 255\n`), img]));
 }
 
+// full-colour 3MF: one closed object, nothing added under the plate, the plate's bottom faces coloured with the flat
+// code and each column's top face with its top cube's colour
+{
+  const m = withBottom(plateTree(0)), s = 1.5, mesh = SakuraExport.faceColourMesh(m, s, null, { warp: perspectiveWarp(m, s, 800) });
+  const a = SakuraExport.audit(mesh), V = mesh.verts, T = mesh.tris, zs = V.filter((_, i) => i % 3 === 2);
+  const want = (m.kTopMax + 1) * s + 0.02, idx = new Map(m.under.map(cb => [cb.c + ',' + cb.r, cb])), top = new Map();
+  for (const cb of m.cubes) { const k = cb.c + ',' + cb.r; if (!top.has(k) || top.get(k).k < cb.k) top.set(k, cb); }
+  let bottomWrong = 0, bottomFaces = 0, topWrong = 0, topFaces = 0;
+  for (let t = 0; t < T.length; t += 3) {
+    const p = [0, 1, 2].map(j => [V[T[t + j] * 3], V[T[t + j] * 3 + 1], V[T[t + j] * 3 + 2]]), cz = (p[0][2] + p[1][2] + p[2][2]) / 3;
+    const nz = (p[1][0] - p[0][0]) * (p[2][1] - p[0][1]) - (p[1][1] - p[0][1]) * (p[2][0] - p[0][0]), col = mesh.keys[mesh.cols[t / 3]];
+    if (Math.abs(nz) / 2 < 0.1) continue;   // the 0.02 mm strips between grown cubes: either neighbour's colour, invisible
+    // the cell under the face's centre (no warp at the plate, so columns are plain; rows run against Y)
+    const cx = (p[0][0] + p[1][0] + p[2][0]) / 3 / s, cy = m.N - (p[0][1] + p[1][1] + p[2][1]) / 3 / s;
+    if (cz < 1e-6 && nz < 0) { bottomFaces++; const cb = idx.get(Math.floor(cx) + ',' + Math.floor(cy)); if (cb && cb.color !== col) bottomWrong++; }
+    else if (nz > 0 && Math.abs(cz - 1.5 - 0.02) < 1e-6) { topFaces++; const cb = top.get(Math.floor(cx) + ',' + Math.floor(cy)); if (cb && cb.k === 0 && cb.color !== col) topWrong++; }
+  }
+  console.log('full-colour 3MF:', a.triangles, 'triangles, open edges', a.open, ', edges shared by >2 faces', a.nonManifold, ', vertices not on one fan', a.badVerts, '; z', Math.min(...zs).toFixed(3), 'to', Math.max(...zs).toFixed(3), '(want 0 to ' + want.toFixed(2) + '); bottom faces', bottomFaces, 'wrong colour', bottomWrong, '; plate top faces', topFaces, 'wrong colour', topWrong);
+  if (a.open || a.nonManifold || a.badVerts) fail('full-colour 3MF is not a closed 2-manifold');
+  if (Math.abs(Math.min(...zs)) > 1e-9 || Math.abs(Math.max(...zs) - want) > 1e-6) fail('full-colour 3MF: not on the bed or a layer added');
+  if (!bottomFaces || bottomWrong || !topFaces || topWrong) fail('full-colour 3MF: faces coloured wrong');
+  pending.push(SakuraExport.toFaceColour3MF(m, s, colours, null, 'SakuraQR ' + text, { warp: perspectiveWarp(m, s, 800) }).then(z => {
+    fs.writeFileSync(path.join(out, 'sakura-color.3mf'), z);
+    const zlib = require('zlib'), b = Buffer.from(z), names = [];
+    for (let p = 0; b.readUInt32LE(p) === 0x04034b50;) { const cs = b.readUInt32LE(p + 18), nl = b.readUInt16LE(p + 26), xl = b.readUInt16LE(p + 28); names.push(b.toString('utf8', p + 30, p + 30 + nl)); if (names.length === 1) { const x = zlib.inflateRawSync(b.subarray(p + 30 + nl + xl, p + 30 + nl + xl + cs)).toString(); if ((x.match(/<object /g) || []).length !== 1 || (x.match(/<triangle /g) || []).length !== a.triangles) fail('full-colour 3MF: not one object with every triangle'); } p += 30 + nl + xl + cs; }
+    if (names[0] !== '3D/3dmodel.model') fail('full-colour 3MF does not start with the model');
+  }));
+}
+
 // top view (one pixel block per module) as PPM
 const hex = { dark: [217, 82, 127], light: [250, 214, 226], wood: [110, 74, 52] };
 const N = model.N, px = 12, W = N * px, img = Buffer.alloc(W * W * 3);

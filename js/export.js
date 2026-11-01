@@ -224,6 +224,78 @@ const SakuraExport = (function () {
     return zip(parts.map(p => ({ name: base + (p.object === 'base' ? '-base-' : '-') + p.key + '.stl', data: stl(p) })));
   }
 
+  // ---- 3MF for full-colour printing (full-colour resin): one object, a colour per triangle ----
+  // The union of all cubes, each grown by GROW as for the parts (so the surface is a clean closed 2-manifold), one piece
+  // as printed: X = column, Y = flipped row, Z = level, millimetres. Each face takes its cube's colour; with model.under
+  // (the flat code, tree.js bottomCode) the plate's bottom faces take that code instead of adding a layer: such
+  // printers colour the surface, so it costs no material.
+  function faceColourMesh(model, s, merge, options) {
+    const opt = Object.assign({ warp: null }, options);
+    const { N } = model, K = model.KMAX + 1, keys = PART_ORDER.filter(k => !(merge && merge[k]));
+    const key = name => (merge && merge[name]) || name, wp = opt.warp || ((c, r, k) => [c, r, k]);
+    const g = new Int8Array(N * N * K).fill(-1);
+    for (const cb of model.cubes) g[(cb.k * N + cb.r) * N + cb.c] = keys.indexOf(key(cb.color));
+    const at = (c, r, k) => (c < 0 || r < 0 || k < 0 || c >= N || r >= N || k >= K) ? -1 : g[(k * N + r) * N + c];
+    const flat = new Map((model.under || []).map(cb => [cb.c + ',' + cb.r, keys.indexOf(key(cb.color))]));
+    // refined grid as in shell(); a refined cell is filled by the first cube that covers it, which also gives its colour
+    const n = 2 * N + 1, m = 2 * K + 1, cover = x => (x & 1) ? [x >> 1] : [(x >> 1) - 1, x >> 1];
+    const fill = new Int8Array(n * n * m).fill(-1), cellOf = new Int32Array(n * n * m);
+    for (let z = 0; z < m; z++) for (let y = 0; y < n; y++) for (let x = 0; x < n; x++) {
+      search: for (const k of cover(z)) for (const r of cover(y)) for (const c of cover(x)) {
+        const v = at(c, r, k);
+        if (v >= 0) { fill[(z * n + y) * n + x] = v; cellOf[(z * n + y) * n + x] = r * N + c; break search; }
+      }
+    }
+    const filled = (x, y, z) => x >= 0 && y >= 0 && z >= 0 && x < n && y < n && z < m && fill[(z * n + y) * n + x] >= 0;
+    const e = GROW / s, coord = i => (i >> 1) + ((i & 1) ? e : -e);
+    const verts = [], index = new Map(), tris = [], cols = [];
+    const vid = p => {
+      const k = p.join(',');
+      let i = index.get(k);
+      if (i === undefined) { const c = coord(p[0]), r = coord(p[1]), z = coord(p[2]), w = wp(c, r, z); i = verts.length / 3; verts.push(w[0] * s, (N - w[1]) * s, z * s + GROW); index.set(k, i); }
+      return i;
+    };
+    const TAN = [[1, 2], [2, 0], [0, 1]];
+    for (let z = 0; z < m; z++) for (let y = 0; y < n; y++) for (let x = 0; x < n; x++) {
+      const i0 = (z * n + y) * n + x;
+      if (fill[i0] < 0) continue;
+      for (let axis = 0; axis < 3; axis++) for (const sign of [1, -1]) {
+        const nb = [x, y, z]; nb[axis] += sign;
+        if (filled(nb[0], nb[1], nb[2])) continue;
+        const [t0, t1] = TAN[axis], pt = (u, v) => { const p = [x, y, z]; if (sign > 0) p[axis] += 1; p[t0] += u; p[t1] += v; return p; };
+        let q = [pt(0, 0), pt(1, 0), pt(1, 1), pt(0, 1)].map(vid);
+        // wind outward in print space (rows run against Y), checked rather than assumed
+        const A = q[0] * 3, B = q[1] * 3, C = q[2] * 3, V = verts;
+        const ux = V[B] - V[A], uy = V[B + 1] - V[A + 1], uz = V[B + 2] - V[A + 2], vx = V[C] - V[A], vy = V[C + 1] - V[A + 1], vz = V[C + 2] - V[A + 2];
+        const nx = uy * vz - uz * vy, ny = uz * vx - ux * vz, nz = ux * vy - uy * vx;
+        const out = [axis === 0 ? sign : 0, axis === 1 ? -sign : 0, axis === 2 ? sign : 0];
+        if (nx * out[0] + ny * out[1] + nz * out[2] < 0) q = q.reverse();
+        let col = fill[i0];
+        if (axis === 2 && sign < 0 && z === 0 && flat.size) col = flat.get((cellOf[i0] % N) + ',' + Math.floor(cellOf[i0] / N));
+        tris.push(q[0], q[1], q[2], q[0], q[2], q[3]); cols.push(col, col);
+      }
+    }
+    return { verts, tris, cols, keys };
+  }
+  function toFaceColour3MF(model, s, colours, merge, title, options) {
+    const { verts, tris, cols, keys } = faceColourMesh(model, s, merge, options), out = [];
+    out.push('<?xml version="1.0" encoding="UTF-8"?>\n<model unit="millimeter" xml:lang="en-US" xmlns="http://schemas.microsoft.com/3dmanufacturing/core/2015/02">\n');
+    out.push(' <metadata name="Title">' + esc(title) + '</metadata>\n <metadata name="Application">SakuraQR</metadata>\n <resources>\n  <basematerials id="1">\n');
+    for (const k of keys) out.push('   <base name="' + esc(colours[k].name) + '" displaycolor="' + colours[k].hex.toUpperCase() + 'FF"/>\n');
+    out.push('  </basematerials>\n  <object id="2" type="model" name="' + esc(title) + '" pid="1" pindex="0">\n   <mesh>\n    <vertices>\n');
+    const vc = [];
+    for (let v = 0; v < verts.length; v += 3) vc.push('     <vertex x="' + num(verts[v]) + '" y="' + num(verts[v + 1]) + '" z="' + num(verts[v + 2]) + '"/>\n');
+    out.push(vc.join(''), '    </vertices>\n    <triangles>\n');
+    const tc = [];
+    for (let t = 0; t < tris.length; t += 3) tc.push('     <triangle v1="' + tris[t] + '" v2="' + tris[t + 1] + '" v3="' + tris[t + 2] + '" pid="1" p1="' + cols[t / 3] + '"/>\n');
+    out.push(tc.join(''), '    </triangles>\n   </mesh>\n  </object>\n </resources>\n <build>\n  <item objectid="2"/>\n </build>\n</model>\n');
+    return zip([
+      { name: '3D/3dmodel.model', data: out.join('') },
+      { name: '[Content_Types].xml', data: CONTENT_TYPES },
+      { name: '_rels/.rels', data: RELS }
+    ]);
+  }
+
   // ---- glTF binary (GLB) for animation and the web (three.js, Blender) ----
   // The assembled tree as printed (same cubes, same perspective warp, not grown), only its outer surface, flat-shaded.
   // glTF conventions: metres, +Y up. The plate's bottom is at y = 0, centred on the origin; column c runs along +X and
@@ -392,6 +464,6 @@ const SakuraExport = (function () {
     return { triangles: T.length / 3, open, nonManifold, badVerts };
   }
 
-  return { buildParts, to3MF, toSTLZip, toGLB, stl, model3mf, zip, topViewCanvas, audit };
+  return { buildParts, to3MF, toSTLZip, toGLB, toFaceColour3MF, faceColourMesh, stl, model3mf, zip, topViewCanvas, audit };
 })();
 if (typeof module !== 'undefined') module.exports = SakuraExport;
