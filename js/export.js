@@ -86,12 +86,16 @@ const SakuraExport = (function () {
     const lift = place => (c, r, k) => { const p = place(c, r, k); return [p[0], p[1], p[2] + GROW / s]; };
     const parts = (cells, place, object, suffix) => keys.map(k => Object.assign({ key: k, object }, colours[k], suffix ? { name: colours[k].name + suffix } : null, shell(cells, ID[k], s, lift(place))))
       .filter(p => p.tris.length);
-    // model.under: the flat code under the plate (tree.js bottomCode), cubes at level -1
+    // model.under: the flat code under the plate (tree.js bottomCode), cubes at level -1, model.underT mm thick (a
+    // thin layer: it only has to show colour). zmap squeezes the grid's level 0 to that thickness, in cube units; it
+    // moves the lattice planes and keeps the small offsets round them (the cubes' growth) as they are.
+    const ut = model.under && model.underT ? model.underT / s : 1;
+    const zmap = k => { const i = Math.round(k); return (i <= 0 ? i * ut : i - 1 + ut) + (k - i); };
     if (opt.layout !== 'split') {
       const lo = model.under ? 1 : 0, cells = cellGrid(N, KMAX + 1 + lo);
       for (const cb of model.cubes) cells.set(cb.c, cb.r, cb.k + lo, id(cb.color));
       if (model.under) for (const cb of model.under) cells.set(cb.c, cb.r, 0, id(cb.color));
-      return parts(cells, (c, r, k) => { const w = wp(c, r, k - lo); return [w[0], N - w[1], k]; }, 'tree');
+      return parts(cells, (c, r, k) => { const w = wp(c, r, k - lo); return [w[0], N - w[1], lo ? zmap(k) : k]; }, 'tree');
     }
     const trunk = new Set(model.trunkCells.map(([c, r]) => c + ',' + r)), isTrunk = cb => trunk.has(cb.c + ',' + cb.r);
     const root = cb => cb.k === 1 && cb.kind === 'wood' && !isTrunk(cb);
@@ -113,7 +117,7 @@ const SakuraExport = (function () {
       if (root(cb)) base.set(cb.c, cb.r, 2, id(cb.color));
     }
     if (model.under) for (const cb of model.under) base.set(cb.c, cb.r, 0, id(cb.color));
-    return out.concat(parts(base, (c, r, k) => { const w = wp(c, r, k - 1); return [x0 + w[0], N - w[1], k]; }, 'base', ' · ' + opt.baseName));
+    return out.concat(parts(base, (c, r, k) => { const w = wp(c, r, k - 1); return [x0 + w[0], N - w[1], model.under ? zmap(k) : k]; }, 'base', ' · ' + opt.baseName));
   }
 
   // ---- binary STL ----
@@ -243,7 +247,8 @@ const SakuraExport = (function () {
     cubes.forEach((cb, i) => { at[((cb.k + lo) * N + cb.r) * N + cb.c] = i; });
     const empty = (c, r, k) => { const kk = k + lo; return c < 0 || r < 0 || kk < 0 || c >= N || r >= N || kk >= KL || at[(kk * N + r) * N + c] < 0; };
     // a cell corner -> metres, the plate centred on the origin
-    const pos = (c, r, k) => { const w = wp(c, r, k); return [(w[0] - P / 2) * mm, k * mm, (w[1] - P / 2) * mm]; };
+    const ut = model.under && model.underT ? model.underT / s : 1;   // the flat code's thickness, in cubes
+    const pos = (c, r, k) => { const w = wp(c, r, k); return [(w[0] - P / 2) * mm, (k < 0 ? k * ut : k) * mm, (w[1] - P / 2) * mm]; };
     const NODES = ['plate', 'trunk', 'canopy', 'bottom'], nodeOf = cb => cb.kind === 'plate' ? 'plate' : cb.kind === 'wood' ? 'trunk' : cb.kind === 'under' ? 'bottom' : 'canopy';
     const prims = new Map(), peak = {};   // node|colour -> { p, nrm, col, idx }; colour -> brightest shade
     const DIRS = [[1, 0, 0], [-1, 0, 0], [0, 1, 0], [0, -1, 0], [0, 0, 1], [0, 0, -1]];   // (dc, dr, dk)
@@ -331,7 +336,7 @@ const SakuraExport = (function () {
       grid: { cols: N, rows: N, origin: [cell(-P / 2), cell(-P / 2)], surface: Array.from({ length: N }, (_, r) => Array.from({ length: N }, (_, c) => topK[r * N + c] ? topK[r * N + c] + 1 : (r < P && c < P ? 1 : 0))) },
       colours: Object.fromEntries(colourKeys.map(k => [MAT_NAME[k], colours[k].hex])),
       // the flat code under the plate, read from below (y from -thickness to 0; the print stands on its bottom)
-      bottom: model.under ? { thickness: cell(1) } : null,
+      bottom: model.under ? { thickness: cell(ut) } : null,
       nodes: { plate: 'level 0, the base plate with the code', trunk: 'trunk, branches and roots', canopy: 'blossom cubes, painted tops included', bottom: 'the flat code under the plate, if any' }
     };
     json.nodes[0].extras = Object.assign({ sakuraqr: info }, opt.extras);

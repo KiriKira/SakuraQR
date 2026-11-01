@@ -107,7 +107,7 @@ for (const [onCanopy, s, shift] of [[true, 4, 0], [false, 4, 0], [false, 1.5, 0]
 
 // GLB for animation: a valid container, every accessor in range, faces wound the way their normals point, and all
 // primitives together a closed surface (welded by position); with the perspective warp, and with the canopy past the plate
-const withBottom = m => Object.assign({}, m, { under: bottomCode(m, qr.matrix) });
+const withBottom = m => Object.assign({}, m, { under: bottomCode(m, qr.matrix), underT: 0.4 });
 for (const [label, m, s, warp] of [['canopy, 4 mm', model, 4, null], ['plate, 1.5 mm, warped', plateTree(0), 1.5, true], ['corner, 1.5 mm, warped', plateTree(CORNER), 1.5, true], ['flat code under the plate, 1.5 mm, warped', withBottom(plateTree(0)), 1.5, true]]) {
   const glb = SakuraExport.toGLB(m, s, colours, null, { warp: warp ? perspectiveWarp(m, s, 800) : null, shade: cb => 1 + ((cb.c + cb.r + cb.k) % 3 - 1) * 0.08 });
   fs.writeFileSync(path.join(out, 'sakura-' + label.replace(/[^a-z0-9.]+/g, '-') + '.glb'), glb);
@@ -142,7 +142,7 @@ for (const [label, m, s, warp] of [['canopy, 4 mm', model, 4, null], ['plate, 1.
   console.log('GLB, ' + label + ':', (glb.length / 1024).toFixed(0), 'KB,', json.meshes.map(x => x.name).join('/') + ',', au.triangles, 'triangles, open edges', au.open, ', mis-wound', misWound, '; bbox', box.map(x => (x * 1000).toFixed(1)).join(' '), 'mm');
   if (au.open || misWound) fail('GLB surface not closed or wound inwards (' + label + ')');
   // the plate's bottom on y = 0, centred (the perspective warp widens it by a fraction of a percent, as in the print)
-  if (Math.abs(box[1] + (m.under ? s / 1000 : 0)) > 1e-7 || !!info.bottom !== !!m.under || Math.abs(box[0] / (-m.P * s / 2000) - 1) > 0.005 || info.plate.cells !== m.P || info.grid.surface.length !== m.N) fail('GLB placement or info (' + label + ')');
+  if (Math.abs(box[1] + (m.under ? m.underT / 1000 : 0)) > 1e-7 || !!info.bottom !== !!m.under || Math.abs(box[0] / (-m.P * s / 2000) - 1) > 0.005 || info.plate.cells !== m.P || info.grid.surface.length !== m.N) fail('GLB placement or info (' + label + ')');
 }
 
 // the flat code under the plate: the code mirrored left to right, so that turned over it reads the right way round;
@@ -157,8 +157,10 @@ for (const [label, m, s, warp] of [['canopy, 4 mm', model, 4, null], ['plate, 1.
   for (const layout of ['one-piece', 'split']) {
     const parts = SakuraExport.buildParts(m, 1.5, colours, null, { layout, warp: perspectiveWarp(m, 1.5, 800) });
     const bad = parts.filter(p => { const a = SakuraExport.audit(p); return a.open || a.nonManifold || a.badVerts; });
-    const zmin = Math.min(...parts.flatMap(p => p.verts.filter((_, i) => i % 3 === 2)));
-    console.log('flat code under the plate, ' + layout + ':', parts.map(p => p.object + '/' + p.key).join(' '), bad.length ? 'NOT closed: ' + bad.map(p => p.key) : 'all closed', ', lowest z', zmin.toFixed(3));
+    const zs = parts.filter(p => p.object === (layout === 'split' ? 'base' : 'tree')).flatMap(p => p.verts.filter((_, i) => i % 3 === 2));
+    const zmin = Math.min(...zs), zmax = Math.max(...zs), want = layout === 'split' ? 3 * 1.5 - 1.5 + 0.4 : (m.kTopMax + 1) * 1.5 + 0.4;   // split base: plate, roots and the layer
+    console.log('flat code under the plate (0.4 mm), ' + layout + ':', parts.map(p => p.object + '/' + p.key).join(' '), bad.length ? 'NOT closed: ' + bad.map(p => p.key) : 'all closed', ', ' + (layout === 'split' ? 'base' : 'tree') + ' z from', zmin.toFixed(3), 'to', zmax.toFixed(3), '(want ' + want.toFixed(2) + ')');
+    if (Math.abs(zmax - want) > 0.05) fail('flat code: ' + layout + ' layer is not 0.4 mm thick');
     if (bad.length) fail('flat code: ' + layout + ' parts not closed');
     if (Math.abs(zmin) > 1e-9) fail('flat code: ' + layout + ' not on the bed');
   }

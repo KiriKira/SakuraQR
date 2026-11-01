@@ -325,7 +325,12 @@ input[type=range] { width: 100%; accent-color: var(--accent); }
         </div>
         <div class="row">
           <label class="toggle"><input type="checkbox" id="bottomcode" checked> 底面加一个平面码（保底）</label>
-          <p class="sub">底座下面多垫一层方块，印同一个码，从下往上看是正的。平面码没有高低差和影子，顶上的码扫不出来时翻过来扫这一面。底座也因此加厚一倍，不容易透色、开裂。</p>
+          <p class="sub">底座下面多垫薄薄一层，印同一个码，从下往上看是正的。平面码没有高低差和影子，顶上的码扫不出来时翻过来扫这一面。这一层只用来显示颜色，不用很厚。</p>
+        </div>
+        <div class="row" id="rowBottomT">
+          <div class="rowhead"><span class="label">底面码厚度</span><span class="mono" id="bottomTVal">0.4 mm</span></div>
+          <input type="range" id="bottomT" min="0.2" max="1.5" step="0.1" value="0.4">
+          <p class="sub">FDM 至少两层（0.2 mm 层高时 0.4 mm）。全彩树脂这类工艺颜色太薄会发浅，深浅对比不够时加厚一点。</p>
         </div>
         <div class="row" id="rowClear" hidden>
           <div class="rowhead"><span class="label">插口间隙（每边）</span><span class="mono" id="clearVal">0.20 mm</span></div>

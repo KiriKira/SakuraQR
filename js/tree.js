@@ -218,7 +218,8 @@ function shadowedLight(m, sh, mat) {
 
 // A flat code under the plate, read from below: one more layer of cubes under the whole plate, the same pattern
 // mirrored left to right (turned over, the plate's columns run the other way), quiet zone light. No height steps,
-// no canopy, no shadows: the fallback when the 3D code on top does not scan. Cubes { c, r, color } at level -1.
+// no canopy, no shadows: the fallback when the 3D code on top does not scan. Cubes { c, r, color } at level -1; the
+// exporters make that level model.underT mm thick (a whole cube if unset).
 function bottomCode(m, mat) {
   const out = [];
   for (let r = 0; r < m.P; r++) for (let c = 0; c < m.P; c++) {

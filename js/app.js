@@ -3,7 +3,7 @@
   const LIGHTS = { blush: ['浅粉', '#FAD6E2'], petal: ['花瓣粉', '#F7C6D6'], white: ['白', '#F5F2EF'] };
   const COLORS = { brown: '#6E4A34' };
   const FIXED = { maxLedge: 2 };
-  const state = { text: '', ecc: 'Q', upper: true, mask: -1, onCanopy: false, bottomCode: true, place: 'centre', persp: true, perspDist: 80, verUp: 0, dome: 6, module: 1.5, trunk: 5, crown: 1, squash: 0.7, lobes: 4, puff: 0.85, rough: 1, ledge: '2', layout: 'one-piece', clear: 0.2, wood: 'brown', pink: 'rouge', light: 'blush', view: 'orbit', dist: 40, off: 0, lens: 'main', simLight: 'even', seedAdd: 0 };
+  const state = { text: '', ecc: 'Q', upper: true, mask: -1, onCanopy: false, bottomCode: true, bottomT: 0.4, place: 'centre', persp: true, perspDist: 80, verUp: 0, dome: 6, module: 1.5, trunk: 5, crown: 1, squash: 0.7, lobes: 4, puff: 0.85, rough: 1, ledge: '2', layout: 'one-piece', clear: 0.2, wood: 'brown', pink: 'rouge', light: 'blush', view: 'orbit', dist: 40, off: 0, lens: 'main', simLight: 'even', seedAdd: 0 };
   const $ = id => document.getElementById(id);
   let T = null, renderer, scanRenderer, scene, group, ground, hemi, dirLight, sim = null, orbitCam, topCam, phoneCam, model = null, needsRender = true;
   let blockMesh = null, blockMat = null;
@@ -48,6 +48,7 @@
   bindRange('puff', 'puff', v => v.toFixed(2));
   bindRange('dome', 'dome', v => v + ' 格');
   bindRange('perspDist', 'perspDist', v => v + ' cm');
+  bindRange('bottomT', 'bottomT', v => v.toFixed(1) + ' mm');
   $('persp').addEventListener('change', e => { state.persp = e.target.checked; schedule(); });
   bindRange('mask', 'mask', v => v < 0 ? '自动' : '第 ' + v + ' 号');
   $('upper').addEventListener('change', e => { state.upper = e.target.checked; schedule(); });
@@ -133,7 +134,7 @@
       const tagv = cb.color === 'dark' ? sh : cb.color === 'wood' ? 10 + sh : (cb.kind === 'plate' ? -1 : 20 + sh);
       for (const F of FACES) {
         if (filled(cb.c + F.n[0], cb.r + F.n[2], cb.k + F.n[1])) continue;
-        const quad = F.q.map(([x, y, z]) => { const w = warp(cb.c + x, cb.r + z, cb.k + y); return [off + w[0] * s, w[2] * s, off + w[1] * s]; });
+        const quad = F.q.map(([x, y, z]) => { const w = warp(cb.c + x, cb.r + z, cb.k + y); return [off + w[0] * s, w[2] < 0 ? w[2] * m.underT : w[2] * s, off + w[1] * s]; });
         for (const p of [quad[0], quad[1], quad[2], quad[0], quad[2], quad[3]]) { pos.push(p[0], p[1], p[2]); nor.push(F.n[0], F.n[1], F.n[2]); col.push(1, 1, 1); tags.push(tagv); }
       }
     }
@@ -207,7 +208,7 @@
   }
   const W = () => model.N * S();
   const H = () => (model.kTopMax + 1) * S();
-  const Hp = () => H() + (model.under ? S() : 0);   // as printed: with the flat code's layer under the plate
+  const Hp = () => H() + (model.under ? model.underT : 0);   // as printed: with the flat code's layer under the plate
   const clampR = r => model ? Math.min(W() * 7, Math.max(W() * 1.1, r)) : r;
   function setupPointer() {
     const el = $('viewer'), pts = new Map(); let pinch0 = 0, r0 = 0;
@@ -530,7 +531,9 @@
     $('maskVal').textContent = (state.mask < 0 ? '自动 · ' : '') + '第 ' + mi.mask + ' 号';
     model.warp = state.persp ? perspectiveWarp(model, S(), state.perspDist * 10) : null;
     model.under = state.bottomCode ? bottomCode(model, mi.mat) : null;
-    ground.position.y = -0.05 - (model.under ? S() : 0);   // the print stands on the flat code's layer
+    model.underT = state.bottomT;
+    ground.position.y = -0.05 - (model.under ? model.underT : 0);   // the print stands on the flat code's layer
+    $('rowBottomT').hidden = !state.bottomCode;
     $('rowPerspDist').hidden = !state.persp;
     while (group.children.length) { const c = group.children[0]; group.remove(c); if (c.geometry) c.geometry.dispose(); }
     blockMesh = new T.Mesh(buildBlocks(model), blockMat); blockMesh.castShadow = true; blockMesh.receiveShadow = true;
@@ -589,7 +592,7 @@
   let lastExport = '';
 
   // ---------- design parameters: everything that decides the exported files, to grow the same tree again ----------
-  const DESIGN_KEYS = ['ecc', 'upper', 'mask', 'onCanopy', 'place', 'persp', 'perspDist', 'verUp', 'dome', 'module', 'trunk', 'crown', 'squash', 'lobes', 'puff', 'rough', 'ledge', 'wood', 'pink', 'light', 'seedAdd', 'layout', 'clear', 'bottomCode'];
+  const DESIGN_KEYS = ['ecc', 'upper', 'mask', 'onCanopy', 'place', 'persp', 'perspDist', 'verUp', 'dome', 'module', 'trunk', 'crown', 'squash', 'lobes', 'puff', 'rough', 'ledge', 'wood', 'pink', 'light', 'seedAdd', 'layout', 'clear', 'bottomCode', 'bottomT'];
   const designParams = () => ({ app: 'SakuraQR', text: $('txt').value.trim(), encoded: state.encoded, settings: Object.fromEntries(DESIGN_KEYS.map(k => [k, state[k]])) });
   $('dldesign').addEventListener('click', e => busy(e.currentTarget, () => {
     download(baseName() + '-design.json', JSON.stringify(designParams(), null, 2) + '\n', 'application/json');
@@ -609,7 +612,7 @@
     return d;
   }
   const SEGS = ['ecc', 'ledge', 'place', 'verUp', 'layout', 'wood'], CHECKS = { upper: 'upper', onCanopy: 'oncanopy', persp: 'persp', bottomCode: 'bottomcode' }, SWATCHES = { pink: ['pinks', PINKS], light: ['lights', LIGHTS] };
-  const RANGES = ['module', 'trunk', 'crown', 'squash', 'lobes', 'rough', 'puff', 'dome', 'perspDist', 'mask', 'clear'];
+  const RANGES = ['module', 'trunk', 'crown', 'squash', 'lobes', 'rough', 'puff', 'dome', 'perspDist', 'mask', 'clear', 'bottomT'];
   // set every control as well as state; returns the settings a control could not take (out of a slider's range)
   function applyDesign(d) {
     const s = Object.assign({ bottomCode: false }, d.settings), off = [];   // designs from before the flat code had none
