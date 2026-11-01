@@ -1,11 +1,12 @@
 // Smoke test, no dependencies: node test/smoke.js [outDir]
 // Encodes a URL, grows the tree, exports 3MF + STL zip in both layouts (one piece; tree upside down + separate base),
 // checks every part is a closed 2-manifold (every edge on exactly two faces, one fan round every vertex, also after
-// welding vertices by position as STL readers do) and the peg fits the socket, checks the GLB for animation, and writes
-// the top view as a PPM image so a decoder can confirm it scans.
+// welding vertices by position as STL readers do) and the peg fits the socket, checks how the 3MF is packed (model
+// first, deflated), the flat code under the plate and the GLB for animation, and writes the top view and the bottom
+// view as PPM images so a decoder can confirm they scan.
 const fs = require('fs'), path = require('path');
 const QR = require('../js/qr.js');
-const { buildCanopyTree, shadowedTops, shadowedLight, perspectiveWarp } = require('../js/tree.js');
+const { buildCanopyTree, shadowedTops, shadowedLight, perspectiveWarp, bottomCode } = require('../js/tree.js');
 const SakuraExport = require('../js/export.js');
 
 const out = process.argv[2] || path.join(__dirname, 'out');
@@ -21,6 +22,8 @@ const s = 4;
 const colours = { dark: { name: 'blossom', hex: '#D9527F' }, light: { name: 'highlight', hex: '#FAD6E2' }, wood: { name: 'trunk', hex: '#6E4A34' } };
 
 let failed = false;
+const pending = [];   // zips are built asynchronously (CompressionStream)
+const save = (name, data) => pending.push(Promise.resolve(data).then(d => fs.writeFileSync(path.join(out, name), d)));
 const fail = msg => { console.error('FAIL: ' + msg); failed = true; };
 for (const [label, merge] of [['3 colours', null], ['2 colours', { wood: 'light' }]]) {
   const parts = SakuraExport.buildParts(model, s, colours, merge);
@@ -31,16 +34,38 @@ for (const [label, merge] of [['3 colours', null], ['2 colours', { wood: 'light'
     if (a.open || a.nonManifold || a.badVerts) fail('the ' + p.key + ' shell is not a closed 2-manifold');
   }
   const tag = merge ? '2c' : '3c';
-  fs.writeFileSync(path.join(out, 'sakura-' + tag + '.3mf'), SakuraExport.to3MF(parts, 'SakuraQR ' + text));
-  fs.writeFileSync(path.join(out, 'sakura-' + tag + '-stl.zip'), SakuraExport.toSTLZip(parts, 'sakura'));
+  save('sakura-' + tag + '.3mf', SakuraExport.to3MF(parts, 'SakuraQR ' + text));
+  save('sakura-' + tag + '-stl.zip', SakuraExport.toSTLZip(parts, 'sakura'));
+  if (!merge) pending.push(SakuraExport.to3MF(parts, 'SakuraQR ' + text).then(z => check3MF(z, SakuraExport.model3mf(parts, 'SakuraQR ' + text))));
+}
+
+// 3MF packing: the model is the first entry (a zip starting with [Content_Types].xml is "Microsoft OOXML" to libmagic,
+// and print services reject it), every entry deflated, and each unpacks to what was put in with the right CRC
+function check3MF(z, modelXml) {
+  const zlib = require('zlib'), buf = Buffer.from(z), names = [];
+  const crcTable = Array.from({ length: 256 }, (_, n) => { let c = n; for (let k = 0; k < 8; k++) c = c & 1 ? 0xEDB88320 ^ (c >>> 1) : c >>> 1; return c >>> 0; });
+  const crc = b => { let c = 0xFFFFFFFF; for (const x of b) c = crcTable[(c ^ x) & 0xFF] ^ (c >>> 8); return (c ^ 0xFFFFFFFF) >>> 0; };
+  let p = 0, model = null;
+  while (buf.readUInt32LE(p) === 0x04034b50) {
+    const method = buf.readUInt16LE(p + 8), c = buf.readUInt32LE(p + 14), csize = buf.readUInt32LE(p + 18), size = buf.readUInt32LE(p + 22), nlen = buf.readUInt16LE(p + 26), xlen = buf.readUInt16LE(p + 28);
+    const name = buf.toString('utf8', p + 30, p + 30 + nlen), body = buf.subarray(p + 30 + nlen + xlen, p + 30 + nlen + xlen + csize);
+    const data = method === 8 ? zlib.inflateRawSync(body) : body;
+    if (method !== 8) fail('3MF entry ' + name + ' is not deflated');
+    if (data.length !== size || crc(data) !== c) fail('3MF entry ' + name + ' does not unpack to its size and CRC');
+    if (name === '3D/3dmodel.model') model = data.toString('utf8');
+    names.push(name); p += 30 + nlen + xlen + csize;
+  }
+  console.log('3MF entries', names.join(', ') + ';', (buf.length / 1024).toFixed(0), 'KB packed,', (Buffer.byteLength(modelXml) / 1024).toFixed(0), 'KB model');
+  if (names[0] !== '3D/3dmodel.model' || names.length !== 3) fail('3MF does not start with the model');
+  if (model !== modelXml) fail('3MF model does not unpack to the model');
 }
 
 // split layout: tree upside down on the bed with a peg on the trunk, base next to it with a socket
-// (also at the smallest cube size, 1.5 mm, where the clearance is a large share of the peg)
+// (also at 1.5 mm and the smallest cube size, 1 mm, where the clearance is a large share of the peg)
 // (and with the trunk in the plate's bottom-right corner, the canopy hanging past the plate)
 const plateTree = shift => buildCanopyTree(qr.matrix, { quiet: 3, crown: 1, squash: 0.7, trunk: 9, lobes: 4, puff: 0.85, rough: 1, maxLedge: 2, onCanopy: false, seed: 12345, shift, over: shift ? 11 : 0 });
 const CORNER = 11;   // 21 x 21 code, 3-cell border: the trunk's outer edge one cell in from the plate's corner
-for (const [onCanopy, s, shift] of [[true, 4, 0], [false, 4, 0], [false, 1.5, 0], [false, 1.5, CORNER]]) {
+for (const [onCanopy, s, shift] of [[true, 4, 0], [false, 4, 0], [false, 1.5, 0], [false, 1, 0], [false, 1.5, CORNER]]) {
   const m = onCanopy ? model : plateTree(shift);
   const parts = SakuraExport.buildParts(m, s, colours, null, { layout: 'split', clear: 0.2 });
   console.log('split, ' + s + ' mm cubes, code ' + (onCanopy ? 'on the canopy' : 'on canopy and base') + (shift ? ', tree shifted ' + shift : '') + ':');
@@ -61,8 +86,8 @@ for (const [onCanopy, s, shift] of [[true, 4, 0], [false, 4, 0], [false, 1.5, 0]
   if (Math.abs(2 * s - pegW - 0.4) > 1e-6 || Math.abs(2 * s - pegD - 0.4) > 1e-6 || !(pegL < 2 * s)) fail('peg does not fit the socket');
   if (plate !== m.P * m.P || baseCells.size !== 4) fail('unexpected plate or trunk');
   const tag = (onCanopy ? 'canopy' : 'plate') + (shift ? '-corner' : '') + '-' + s + 'mm';
-  fs.writeFileSync(path.join(out, 'sakura-split-' + tag + '.3mf'), SakuraExport.to3MF(parts, 'SakuraQR ' + text));
-  fs.writeFileSync(path.join(out, 'sakura-split-' + tag + '-stl.zip'), SakuraExport.toSTLZip(parts, 'sakura'));
+  save('sakura-split-' + tag + '.3mf', SakuraExport.to3MF(parts, 'SakuraQR ' + text));
+  save('sakura-split-' + tag + '-stl.zip', SakuraExport.toSTLZip(parts, 'sakura'));
 }
 
 // a lamp off the code's top-left corner, 60° up: with the trunk in the bottom-right corner the canopy's shadow falls
@@ -82,7 +107,8 @@ for (const [onCanopy, s, shift] of [[true, 4, 0], [false, 4, 0], [false, 1.5, 0]
 
 // GLB for animation: a valid container, every accessor in range, faces wound the way their normals point, and all
 // primitives together a closed surface (welded by position); with the perspective warp, and with the canopy past the plate
-for (const [label, m, s, warp] of [['canopy, 4 mm', model, 4, null], ['plate, 1.5 mm, warped', plateTree(0), 1.5, true], ['corner, 1.5 mm, warped', plateTree(CORNER), 1.5, true]]) {
+const withBottom = m => Object.assign({}, m, { under: bottomCode(m, qr.matrix), underT: 0.4 });
+for (const [label, m, s, warp] of [['canopy, 4 mm', model, 4, null], ['plate, 1.5 mm, warped', plateTree(0), 1.5, true], ['corner, 1.5 mm, warped', plateTree(CORNER), 1.5, true], ['flat code under the plate, 1.5 mm, warped', withBottom(plateTree(0)), 1.5, true]]) {
   const glb = SakuraExport.toGLB(m, s, colours, null, { warp: warp ? perspectiveWarp(m, s, 800) : null, shade: cb => 1 + ((cb.c + cb.r + cb.k) % 3 - 1) * 0.08 });
   fs.writeFileSync(path.join(out, 'sakura-' + label.replace(/[^a-z0-9.]+/g, '-') + '.glb'), glb);
   const dv = new DataView(glb.buffer, glb.byteOffset, glb.byteLength);
@@ -116,7 +142,61 @@ for (const [label, m, s, warp] of [['canopy, 4 mm', model, 4, null], ['plate, 1.
   console.log('GLB, ' + label + ':', (glb.length / 1024).toFixed(0), 'KB,', json.meshes.map(x => x.name).join('/') + ',', au.triangles, 'triangles, open edges', au.open, ', mis-wound', misWound, '; bbox', box.map(x => (x * 1000).toFixed(1)).join(' '), 'mm');
   if (au.open || misWound) fail('GLB surface not closed or wound inwards (' + label + ')');
   // the plate's bottom on y = 0, centred (the perspective warp widens it by a fraction of a percent, as in the print)
-  if (Math.abs(box[1]) > 1e-7 || Math.abs(box[0] / (-m.P * s / 2000) - 1) > 0.005 || info.plate.cells !== m.P || info.grid.surface.length !== m.N) fail('GLB placement or info (' + label + ')');
+  if (Math.abs(box[1] + (m.under ? m.underT / 1000 : 0)) > 1e-7 || !!info.bottom !== !!m.under || Math.abs(box[0] / (-m.P * s / 2000) - 1) > 0.005 || info.plate.cells !== m.P || info.grid.surface.length !== m.N) fail('GLB placement or info (' + label + ')');
+}
+
+// the flat code under the plate: the code mirrored left to right, so that turned over it reads the right way round;
+// in both layouts every part stays a closed 2-manifold, the base gets a closed bottom and the peg still fits the socket
+{
+  const m = withBottom(plateTree(0)), P = m.P;
+  for (let r = 0; r < m.n; r++) for (let c = 0; c < m.n; c++) {
+    const cb = m.under[(r + m.q) * P + (m.q + m.n - 1 - c)];
+    if ((cb.color === 'dark') !== !!qr.matrix[r][c]) { fail('flat code under the plate is not the mirrored code'); r = m.n; break; }
+  }
+  if (m.under.length !== P * P || m.under.some(cb => (cb.c < m.q || cb.r < m.q || cb.c >= m.q + m.n || cb.r >= m.q + m.n) && cb.color !== 'light')) fail('flat code: plate not covered or quiet zone not light');
+  for (const layout of ['one-piece', 'split']) {
+    const parts = SakuraExport.buildParts(m, 1.5, colours, null, { layout, warp: perspectiveWarp(m, 1.5, 800) });
+    const bad = parts.filter(p => { const a = SakuraExport.audit(p); return a.open || a.nonManifold || a.badVerts; });
+    const zs = parts.filter(p => p.object === (layout === 'split' ? 'base' : 'tree')).flatMap(p => p.verts.filter((_, i) => i % 3 === 2));
+    const zmin = Math.min(...zs), zmax = Math.max(...zs), want = layout === 'split' ? 3 * 1.5 - 1.5 + 0.4 : (m.kTopMax + 1) * 1.5 + 0.4;   // split base: plate, roots and the layer
+    console.log('flat code under the plate (0.4 mm), ' + layout + ':', parts.map(p => p.object + '/' + p.key).join(' '), bad.length ? 'NOT closed: ' + bad.map(p => p.key) : 'all closed', ', ' + (layout === 'split' ? 'base' : 'tree') + ' z from', zmin.toFixed(3), 'to', zmax.toFixed(3), '(want ' + want.toFixed(2) + ')');
+    if (Math.abs(zmax - want) > 0.05) fail('flat code: ' + layout + ' layer is not 0.4 mm thick');
+    if (bad.length) fail('flat code: ' + layout + ' parts not closed');
+    if (Math.abs(zmin) > 1e-9) fail('flat code: ' + layout + ' not on the bed');
+  }
+  // seen from below, as PPM (turned over left to right: column c shows at P - 1 - c)
+  const px = 12, W = (P + 4) * px, img = Buffer.alloc(W * W * 3, 255), rgb = { dark: [217, 82, 127], light: [250, 214, 226] };
+  for (const cb of m.under) for (let y = 0; y < px; y++) for (let x = 0; x < px; x++) img.set(rgb[cb.color], (((cb.r + 2) * px + y) * W + (P - 1 - cb.c + 2) * px + x) * 3);
+  fs.writeFileSync(path.join(out, 'bottomview.ppm'), Buffer.concat([Buffer.from(`P6 ${W} ${W} 255\n`), img]));
+}
+
+// full-colour 3MF: one closed object, nothing added under the plate, the plate's bottom faces coloured with the flat
+// code and each column's top face with its top cube's colour
+{
+  const m = withBottom(plateTree(0)), s = 1.5, mesh = SakuraExport.faceColourMesh(m, s, null, { warp: perspectiveWarp(m, s, 800) });
+  const a = SakuraExport.audit(mesh), V = mesh.verts, T = mesh.tris, zs = V.filter((_, i) => i % 3 === 2);
+  const want = (m.kTopMax + 1) * s + 0.02, idx = new Map(m.under.map(cb => [cb.c + ',' + cb.r, cb])), top = new Map();
+  for (const cb of m.cubes) { const k = cb.c + ',' + cb.r; if (!top.has(k) || top.get(k).k < cb.k) top.set(k, cb); }
+  let bottomWrong = 0, bottomFaces = 0, topWrong = 0, topFaces = 0;
+  for (let t = 0; t < T.length; t += 3) {
+    const p = [0, 1, 2].map(j => [V[T[t + j] * 3], V[T[t + j] * 3 + 1], V[T[t + j] * 3 + 2]]), cz = (p[0][2] + p[1][2] + p[2][2]) / 3;
+    const nz = (p[1][0] - p[0][0]) * (p[2][1] - p[0][1]) - (p[1][1] - p[0][1]) * (p[2][0] - p[0][0]), col = mesh.keys[mesh.cols[t / 3]];
+    if (Math.abs(nz) / 2 < 0.1) continue;   // the 0.02 mm strips between grown cubes: either neighbour's colour, invisible
+    // the cell under the face's centre (no warp at the plate, so columns are plain; rows run against Y)
+    const cx = (p[0][0] + p[1][0] + p[2][0]) / 3 / s, cy = m.N - (p[0][1] + p[1][1] + p[2][1]) / 3 / s;
+    if (cz < 1e-6 && nz < 0) { bottomFaces++; const cb = idx.get(Math.floor(cx) + ',' + Math.floor(cy)); if (cb && cb.color !== col) bottomWrong++; }
+    else if (nz > 0 && Math.abs(cz - 1.5 - 0.02) < 1e-6) { topFaces++; const cb = top.get(Math.floor(cx) + ',' + Math.floor(cy)); if (cb && cb.k === 0 && cb.color !== col) topWrong++; }
+  }
+  console.log('full-colour 3MF:', a.triangles, 'triangles, open edges', a.open, ', edges shared by >2 faces', a.nonManifold, ', vertices not on one fan', a.badVerts, '; z', Math.min(...zs).toFixed(3), 'to', Math.max(...zs).toFixed(3), '(want 0 to ' + want.toFixed(2) + '); bottom faces', bottomFaces, 'wrong colour', bottomWrong, '; plate top faces', topFaces, 'wrong colour', topWrong);
+  if (a.open || a.nonManifold || a.badVerts) fail('full-colour 3MF is not a closed 2-manifold');
+  if (Math.abs(Math.min(...zs)) > 1e-9 || Math.abs(Math.max(...zs) - want) > 1e-6) fail('full-colour 3MF: not on the bed or a layer added');
+  if (!bottomFaces || bottomWrong || !topFaces || topWrong) fail('full-colour 3MF: faces coloured wrong');
+  pending.push(SakuraExport.toFaceColour3MF(m, s, colours, null, 'SakuraQR ' + text, { warp: perspectiveWarp(m, s, 800) }).then(z => {
+    fs.writeFileSync(path.join(out, 'sakura-color.3mf'), z);
+    const zlib = require('zlib'), b = Buffer.from(z), names = [];
+    for (let p = 0; b.readUInt32LE(p) === 0x04034b50;) { const cs = b.readUInt32LE(p + 18), nl = b.readUInt16LE(p + 26), xl = b.readUInt16LE(p + 28); names.push(b.toString('utf8', p + 30, p + 30 + nl)); if (names.length === 1) { const x = zlib.inflateRawSync(b.subarray(p + 30 + nl + xl, p + 30 + nl + xl + cs)).toString(); if ((x.match(/<object /g) || []).length !== 1 || (x.match(/<triangle /g) || []).length !== a.triangles) fail('full-colour 3MF: not one object with every triangle'); } p += 30 + nl + xl + cs; }
+    if (names[0] !== '3D/3dmodel.model') fail('full-colour 3MF does not start with the model');
+  }));
 }
 
 // top view (one pixel block per module) as PPM
@@ -127,5 +207,7 @@ for (const cb of model.cubes) { const i = cb.r * N + cb.c; if (!top[i] || cb.k >
 for (let y = 0; y < W; y++) for (let x = 0; x < W; x++) { const c = hex[top[Math.floor(y / px) * N + Math.floor(x / px)].color]; img.set(c, (y * W + x) * 3); }
 fs.writeFileSync(path.join(out, 'topview.ppm'), Buffer.concat([Buffer.from(`P6 ${W} ${W} 255\n`), img]));
 
-console.log('size', (N * s) + ' x ' + (N * s) + ' x ' + ((model.kTopMax + 1) * s) + ' mm; files in ' + out);
-if (failed) process.exit(1);
+Promise.all(pending).then(() => {
+  console.log('size', (N * s) + ' x ' + (N * s) + ' x ' + ((model.kTopMax + 1) * s) + ' mm; files in ' + out);
+  if (failed) process.exit(1);
+}, e => { console.error('FAIL: ' + e.stack); process.exit(1); });

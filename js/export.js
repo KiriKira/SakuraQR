@@ -86,10 +86,16 @@ const SakuraExport = (function () {
     const lift = place => (c, r, k) => { const p = place(c, r, k); return [p[0], p[1], p[2] + GROW / s]; };
     const parts = (cells, place, object, suffix) => keys.map(k => Object.assign({ key: k, object }, colours[k], suffix ? { name: colours[k].name + suffix } : null, shell(cells, ID[k], s, lift(place))))
       .filter(p => p.tris.length);
+    // model.under: the flat code under the plate (tree.js bottomCode), cubes at level -1, model.underT mm thick (a
+    // thin layer: it only has to show colour). zmap squeezes the grid's level 0 to that thickness, in cube units; it
+    // moves the lattice planes and keeps the small offsets round them (the cubes' growth) as they are.
+    const ut = model.under && model.underT ? model.underT / s : 1;
+    const zmap = k => { const i = Math.round(k); return (i <= 0 ? i * ut : i - 1 + ut) + (k - i); };
     if (opt.layout !== 'split') {
-      const cells = cellGrid(N, KMAX + 1);
-      for (const cb of model.cubes) cells.set(cb.c, cb.r, cb.k, id(cb.color));
-      return parts(cells, (c, r, k) => { const w = wp(c, r, k); return [w[0], N - w[1], k]; }, 'tree');
+      const lo = model.under ? 1 : 0, cells = cellGrid(N, KMAX + 1 + lo);
+      for (const cb of model.cubes) cells.set(cb.c, cb.r, cb.k + lo, id(cb.color));
+      if (model.under) for (const cb of model.under) cells.set(cb.c, cb.r, 0, id(cb.color));
+      return parts(cells, (c, r, k) => { const w = wp(c, r, k - lo); return [w[0], N - w[1], lo ? zmap(k) : k]; }, 'tree');
     }
     const trunk = new Set(model.trunkCells.map(([c, r]) => c + ',' + r)), isTrunk = cb => trunk.has(cb.c + ',' + cb.r);
     const root = cb => cb.k === 1 && cb.kind === 'wood' && !isTrunk(cb);
@@ -102,13 +108,16 @@ const SakuraExport = (function () {
     const peg = box(c0 * s + opt.clear, r0 * s + opt.clear, T * s, (c0 + 2) * s - opt.clear, (r0 + 2) * s - opt.clear, T * s + 2 * s - 0.4);
     const pegColour = colours[(merge && merge.wood) || 'wood'];
     out.push(Object.assign({ key: 'peg', object: 'tree', name: pegColour.name + ' 榫头', hex: pegColour.hex }, peg));
-    // base, the right way up: an extra plate layer, the plate, the roots; the trunk's cells stay open as the socket
+    // base, the right way up: an extra plate layer, the plate, the roots; the trunk's cells stay open as the socket.
+    // With the flat code under the plate, the extra layer is that code and closes the socket's bottom (the socket is
+    // then the plate and the roots' level, still as deep as the peg is long).
     const base = cellGrid(N, 3), x0 = N + opt.gap / s;
     for (const cb of model.cubes) {
-      if (cb.k === 0 && !isTrunk(cb)) { base.set(cb.c, cb.r, 0, id('light')); base.set(cb.c, cb.r, 1, id(cb.color)); }
+      if (cb.k === 0 && !isTrunk(cb)) { if (!model.under) base.set(cb.c, cb.r, 0, id('light')); base.set(cb.c, cb.r, 1, id(cb.color)); }
       if (root(cb)) base.set(cb.c, cb.r, 2, id(cb.color));
     }
-    return out.concat(parts(base, (c, r, k) => { const w = wp(c, r, k - 1); return [x0 + w[0], N - w[1], k]; }, 'base', ' · ' + opt.baseName));
+    if (model.under) for (const cb of model.under) base.set(cb.c, cb.r, 0, id(cb.color));
+    return out.concat(parts(base, (c, r, k) => { const w = wp(c, r, k - 1); return [x0 + w[0], N - w[1], model.under ? zmap(k) : k]; }, 'base', ' · ' + opt.baseName));
   }
 
   // ---- binary STL ----
@@ -162,24 +171,31 @@ const SakuraExport = (function () {
   const CONTENT_TYPES = '<?xml version="1.0" encoding="UTF-8"?>\n<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types"><Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/><Default Extension="model" ContentType="application/vnd.ms-package.3dmanufacturing-3dmodel+xml"/></Types>\n';
   const RELS = '<?xml version="1.0" encoding="UTF-8"?>\n<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Target="/3D/3dmodel.model" Id="rel0" Type="http://schemas.microsoft.com/3dmanufacturing/2013/01/3dmodel"/></Relationships>\n';
 
-  // ---- minimal ZIP writer (stored, no compression) ----
+  // ---- minimal ZIP writer: deflated where the platform has CompressionStream('deflate-raw'), else stored ----
   const CRC = (() => { const t = new Uint32Array(256); for (let n = 0; n < 256; n++) { let c = n; for (let k = 0; k < 8; k++) c = c & 1 ? 0xEDB88320 ^ (c >>> 1) : c >>> 1; t[n] = c >>> 0; } return t; })();
   const crc32 = u8 => { let c = 0xFFFFFFFF; for (let i = 0; i < u8.length; i++) c = CRC[(c ^ u8[i]) & 0xFF] ^ (c >>> 8); return (c ^ 0xFFFFFFFF) >>> 0; };
   const utf8 = s => new TextEncoder().encode(s);
-  function zip(files) { // [{ name, data: Uint8Array | string }]
+  async function deflateRaw(u8) {
+    const cs = new CompressionStream('deflate-raw'), w = cs.writable.getWriter();
+    w.write(u8); w.close();
+    return new Uint8Array(await new Response(cs.readable).arrayBuffer());
+  }
+  async function zip(files) { // [{ name, data: Uint8Array | string }], resolves to the archive
     const chunks = [], central = []; let offset = 0;
+    const canDeflate = typeof CompressionStream !== 'undefined';
     const d = new Date(), dosTime = (d.getHours() << 11) | (d.getMinutes() << 5) | (d.getSeconds() >> 1), dosDate = ((d.getFullYear() - 1980) << 9) | ((d.getMonth() + 1) << 5) | d.getDate();
     for (const f of files) {
-      const name = utf8(f.name), data = typeof f.data === 'string' ? utf8(f.data) : f.data, crc = crc32(data);
+      const name = utf8(f.name), raw = typeof f.data === 'string' ? utf8(f.data) : f.data, crc = crc32(raw);
+      const packed = canDeflate ? await deflateRaw(raw) : null, method = packed && packed.length < raw.length ? 8 : 0, data = method ? packed : raw;
       const lh = new DataView(new ArrayBuffer(30));
-      lh.setUint32(0, 0x04034b50, true); lh.setUint16(4, 20, true); lh.setUint16(6, 0x0800, true); lh.setUint16(8, 0, true);
+      lh.setUint32(0, 0x04034b50, true); lh.setUint16(4, 20, true); lh.setUint16(6, 0x0800, true); lh.setUint16(8, method, true);
       lh.setUint16(10, dosTime, true); lh.setUint16(12, dosDate, true); lh.setUint32(14, crc, true);
-      lh.setUint32(18, data.length, true); lh.setUint32(22, data.length, true); lh.setUint16(26, name.length, true); lh.setUint16(28, 0, true);
+      lh.setUint32(18, data.length, true); lh.setUint32(22, raw.length, true); lh.setUint16(26, name.length, true); lh.setUint16(28, 0, true);
       chunks.push(new Uint8Array(lh.buffer), name, data);
       const ch = new DataView(new ArrayBuffer(46));
-      ch.setUint32(0, 0x02014b50, true); ch.setUint16(4, 20, true); ch.setUint16(6, 20, true); ch.setUint16(8, 0x0800, true); ch.setUint16(10, 0, true);
+      ch.setUint32(0, 0x02014b50, true); ch.setUint16(4, 20, true); ch.setUint16(6, 20, true); ch.setUint16(8, 0x0800, true); ch.setUint16(10, method, true);
       ch.setUint16(12, dosTime, true); ch.setUint16(14, dosDate, true); ch.setUint32(16, crc, true);
-      ch.setUint32(20, data.length, true); ch.setUint32(24, data.length, true); ch.setUint16(28, name.length, true);
+      ch.setUint32(20, data.length, true); ch.setUint32(24, raw.length, true); ch.setUint16(28, name.length, true);
       ch.setUint16(30, 0, true); ch.setUint16(32, 0, true); ch.setUint16(34, 0, true); ch.setUint16(36, 0, true); ch.setUint32(38, 0, true); ch.setUint32(42, offset, true);
       central.push(new Uint8Array(ch.buffer), name);
       offset += 30 + name.length + data.length;
@@ -194,15 +210,90 @@ const SakuraExport = (function () {
     return out;
   }
 
+  // the model goes first: file-type sniffers (libmagic among them) call a zip whose first entry is [Content_Types].xml
+  // or _rels/.rels "Microsoft OOXML" unless a Word, Excel or PowerPoint folder follows, and print services reject it.
+  // OPC readers go by the central directory, so the order does not matter to them.
   function to3MF(parts, title) {
     return zip([
+      { name: '3D/3dmodel.model', data: model3mf(parts, title) },
       { name: '[Content_Types].xml', data: CONTENT_TYPES },
-      { name: '_rels/.rels', data: RELS },
-      { name: '3D/3dmodel.model', data: model3mf(parts, title) }
+      { name: '_rels/.rels', data: RELS }
     ]);
   }
   function toSTLZip(parts, base) {
     return zip(parts.map(p => ({ name: base + (p.object === 'base' ? '-base-' : '-') + p.key + '.stl', data: stl(p) })));
+  }
+
+  // ---- 3MF for full-colour printing (full-colour resin): one object, a colour per triangle ----
+  // The union of all cubes, each grown by GROW as for the parts (so the surface is a clean closed 2-manifold), one piece
+  // as printed: X = column, Y = flipped row, Z = level, millimetres. Each face takes its cube's colour; with model.under
+  // (the flat code, tree.js bottomCode) the plate's bottom faces take that code instead of adding a layer: such
+  // printers colour the surface, so it costs no material.
+  function faceColourMesh(model, s, merge, options) {
+    const opt = Object.assign({ warp: null }, options);
+    const { N } = model, K = model.KMAX + 1, keys = PART_ORDER.filter(k => !(merge && merge[k]));
+    const key = name => (merge && merge[name]) || name, wp = opt.warp || ((c, r, k) => [c, r, k]);
+    const g = new Int8Array(N * N * K).fill(-1);
+    for (const cb of model.cubes) g[(cb.k * N + cb.r) * N + cb.c] = keys.indexOf(key(cb.color));
+    const at = (c, r, k) => (c < 0 || r < 0 || k < 0 || c >= N || r >= N || k >= K) ? -1 : g[(k * N + r) * N + c];
+    const flat = new Map((model.under || []).map(cb => [cb.c + ',' + cb.r, keys.indexOf(key(cb.color))]));
+    // refined grid as in shell(); a refined cell is filled by the first cube that covers it, which also gives its colour
+    const n = 2 * N + 1, m = 2 * K + 1, cover = x => (x & 1) ? [x >> 1] : [(x >> 1) - 1, x >> 1];
+    const fill = new Int8Array(n * n * m).fill(-1), cellOf = new Int32Array(n * n * m);
+    for (let z = 0; z < m; z++) for (let y = 0; y < n; y++) for (let x = 0; x < n; x++) {
+      search: for (const k of cover(z)) for (const r of cover(y)) for (const c of cover(x)) {
+        const v = at(c, r, k);
+        if (v >= 0) { fill[(z * n + y) * n + x] = v; cellOf[(z * n + y) * n + x] = r * N + c; break search; }
+      }
+    }
+    const filled = (x, y, z) => x >= 0 && y >= 0 && z >= 0 && x < n && y < n && z < m && fill[(z * n + y) * n + x] >= 0;
+    const e = GROW / s, coord = i => (i >> 1) + ((i & 1) ? e : -e);
+    const verts = [], index = new Map(), tris = [], cols = [];
+    const vid = p => {
+      const k = p.join(',');
+      let i = index.get(k);
+      if (i === undefined) { const c = coord(p[0]), r = coord(p[1]), z = coord(p[2]), w = wp(c, r, z); i = verts.length / 3; verts.push(w[0] * s, (N - w[1]) * s, z * s + GROW); index.set(k, i); }
+      return i;
+    };
+    const TAN = [[1, 2], [2, 0], [0, 1]];
+    for (let z = 0; z < m; z++) for (let y = 0; y < n; y++) for (let x = 0; x < n; x++) {
+      const i0 = (z * n + y) * n + x;
+      if (fill[i0] < 0) continue;
+      for (let axis = 0; axis < 3; axis++) for (const sign of [1, -1]) {
+        const nb = [x, y, z]; nb[axis] += sign;
+        if (filled(nb[0], nb[1], nb[2])) continue;
+        const [t0, t1] = TAN[axis], pt = (u, v) => { const p = [x, y, z]; if (sign > 0) p[axis] += 1; p[t0] += u; p[t1] += v; return p; };
+        let q = [pt(0, 0), pt(1, 0), pt(1, 1), pt(0, 1)].map(vid);
+        // wind outward in print space (rows run against Y), checked rather than assumed
+        const A = q[0] * 3, B = q[1] * 3, C = q[2] * 3, V = verts;
+        const ux = V[B] - V[A], uy = V[B + 1] - V[A + 1], uz = V[B + 2] - V[A + 2], vx = V[C] - V[A], vy = V[C + 1] - V[A + 1], vz = V[C + 2] - V[A + 2];
+        const nx = uy * vz - uz * vy, ny = uz * vx - ux * vz, nz = ux * vy - uy * vx;
+        const out = [axis === 0 ? sign : 0, axis === 1 ? -sign : 0, axis === 2 ? sign : 0];
+        if (nx * out[0] + ny * out[1] + nz * out[2] < 0) q = q.reverse();
+        let col = fill[i0];
+        if (axis === 2 && sign < 0 && z === 0 && flat.size) col = flat.get((cellOf[i0] % N) + ',' + Math.floor(cellOf[i0] / N));
+        tris.push(q[0], q[1], q[2], q[0], q[2], q[3]); cols.push(col, col);
+      }
+    }
+    return { verts, tris, cols, keys };
+  }
+  function toFaceColour3MF(model, s, colours, merge, title, options) {
+    const { verts, tris, cols, keys } = faceColourMesh(model, s, merge, options), out = [];
+    out.push('<?xml version="1.0" encoding="UTF-8"?>\n<model unit="millimeter" xml:lang="en-US" xmlns="http://schemas.microsoft.com/3dmanufacturing/core/2015/02">\n');
+    out.push(' <metadata name="Title">' + esc(title) + '</metadata>\n <metadata name="Application">SakuraQR</metadata>\n <resources>\n  <basematerials id="1">\n');
+    for (const k of keys) out.push('   <base name="' + esc(colours[k].name) + '" displaycolor="' + colours[k].hex.toUpperCase() + 'FF"/>\n');
+    out.push('  </basematerials>\n  <object id="2" type="model" name="' + esc(title) + '" pid="1" pindex="0">\n   <mesh>\n    <vertices>\n');
+    const vc = [];
+    for (let v = 0; v < verts.length; v += 3) vc.push('     <vertex x="' + num(verts[v]) + '" y="' + num(verts[v + 1]) + '" z="' + num(verts[v + 2]) + '"/>\n');
+    out.push(vc.join(''), '    </vertices>\n    <triangles>\n');
+    const tc = [];
+    for (let t = 0; t < tris.length; t += 3) tc.push('     <triangle v1="' + tris[t] + '" v2="' + tris[t + 1] + '" v3="' + tris[t + 2] + '" pid="1" p1="' + cols[t / 3] + '"/>\n');
+    out.push(tc.join(''), '    </triangles>\n   </mesh>\n  </object>\n </resources>\n <build>\n  <item objectid="2"/>\n </build>\n</model>\n');
+    return zip([
+      { name: '3D/3dmodel.model', data: out.join('') },
+      { name: '[Content_Types].xml', data: CONTENT_TYPES },
+      { name: '_rels/.rels', data: RELS }
+    ]);
   }
 
   // ---- glTF binary (GLB) for animation and the web (three.js, Blender) ----
@@ -222,15 +313,18 @@ const SakuraExport = (function () {
     const { N, P, n, q } = model, K = model.KMAX + 1, mm = s / 1000;
     const wp = opt.warp || ((c, r, k) => [c, r, k]);
     const key = name => (merge && merge[name]) || name;
-    const at = new Int32Array(N * N * K).fill(-1);
-    model.cubes.forEach((cb, i) => { at[(cb.k * N + cb.r) * N + cb.c] = i; });
-    const empty = (c, r, k) => c < 0 || r < 0 || k < 0 || c >= N || r >= N || k >= K || at[(k * N + r) * N + c] < 0;
+    // the flat code under the plate (model.under) is level -1: below y = 0, so the plate's bottom stays the origin
+    const lo = model.under ? 1 : 0, cubes = model.cubes.concat(model.under || []), KL = K + lo;
+    const at = new Int32Array(N * N * KL).fill(-1);
+    cubes.forEach((cb, i) => { at[((cb.k + lo) * N + cb.r) * N + cb.c] = i; });
+    const empty = (c, r, k) => { const kk = k + lo; return c < 0 || r < 0 || kk < 0 || c >= N || r >= N || kk >= KL || at[(kk * N + r) * N + c] < 0; };
     // a cell corner -> metres, the plate centred on the origin
-    const pos = (c, r, k) => { const w = wp(c, r, k); return [(w[0] - P / 2) * mm, k * mm, (w[1] - P / 2) * mm]; };
-    const NODES = ['plate', 'trunk', 'canopy'], nodeOf = cb => cb.kind === 'plate' ? 'plate' : cb.kind === 'wood' ? 'trunk' : 'canopy';
+    const ut = model.under && model.underT ? model.underT / s : 1;   // the flat code's thickness, in cubes
+    const pos = (c, r, k) => { const w = wp(c, r, k); return [(w[0] - P / 2) * mm, (k < 0 ? k * ut : k) * mm, (w[1] - P / 2) * mm]; };
+    const NODES = ['plate', 'trunk', 'canopy', 'bottom'], nodeOf = cb => cb.kind === 'plate' ? 'plate' : cb.kind === 'wood' ? 'trunk' : cb.kind === 'under' ? 'bottom' : 'canopy';
     const prims = new Map(), peak = {};   // node|colour -> { p, nrm, col, idx }; colour -> brightest shade
     const DIRS = [[1, 0, 0], [-1, 0, 0], [0, 1, 0], [0, -1, 0], [0, 0, 1], [0, 0, -1]];   // (dc, dr, dk)
-    for (const cb of model.cubes) {
+    for (const cb of cubes) {
       const colour = key(cb.color), id = nodeOf(cb) + '|' + colour, sh = opt.shade ? opt.shade(cb) : 1;
       if (!prims.has(id)) prims.set(id, { p: [], nrm: [], col: [], idx: [] });
       peak[colour] = Math.max(peak[colour] || 0, sh);
@@ -313,7 +407,9 @@ const SakuraExport = (function () {
       // top in cells (1 = bare plate, 0 = nothing there). The perspective warp moves high cells up to a few % inwards.
       grid: { cols: N, rows: N, origin: [cell(-P / 2), cell(-P / 2)], surface: Array.from({ length: N }, (_, r) => Array.from({ length: N }, (_, c) => topK[r * N + c] ? topK[r * N + c] + 1 : (r < P && c < P ? 1 : 0))) },
       colours: Object.fromEntries(colourKeys.map(k => [MAT_NAME[k], colours[k].hex])),
-      nodes: { plate: 'level 0, the base plate with the code', trunk: 'trunk, branches and roots', canopy: 'blossom cubes, painted tops included' }
+      // the flat code under the plate, read from below (y from -thickness to 0; the print stands on its bottom)
+      bottom: model.under ? { thickness: cell(ut) } : null,
+      nodes: { plate: 'level 0, the base plate with the code', trunk: 'trunk, branches and roots', canopy: 'blossom cubes, painted tops included', bottom: 'the flat code under the plate, if any' }
     };
     json.nodes[0].extras = Object.assign({ sakuraqr: info }, opt.extras);
 
@@ -368,6 +464,6 @@ const SakuraExport = (function () {
     return { triangles: T.length / 3, open, nonManifold, badVerts };
   }
 
-  return { buildParts, to3MF, toSTLZip, toGLB, stl, model3mf, zip, topViewCanvas, audit };
+  return { buildParts, to3MF, toSTLZip, toGLB, toFaceColour3MF, faceColourMesh, stl, model3mf, zip, topViewCanvas, audit };
 })();
 if (typeof module !== 'undefined') module.exports = SakuraExport;

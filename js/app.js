@@ -3,9 +3,9 @@
   const LIGHTS = { blush: ['浅粉', '#FAD6E2'], petal: ['花瓣粉', '#F7C6D6'], white: ['白', '#F5F2EF'] };
   const COLORS = { brown: '#6E4A34' };
   const FIXED = { maxLedge: 2 };
-  const state = { text: '', ecc: 'Q', upper: true, mask: -1, onCanopy: false, place: 'centre', persp: true, perspDist: 80, verUp: 0, dome: 6, module: 1.5, trunk: 5, crown: 1, squash: 0.7, lobes: 4, puff: 0.85, rough: 1, ledge: '2', layout: 'one-piece', clear: 0.2, wood: 'brown', pink: 'rouge', light: 'blush', view: 'orbit', dist: 40, off: 0, lens: 'main', simLight: 'even', seedAdd: 0 };
+  const state = { text: '', ecc: 'Q', upper: true, mask: -1, onCanopy: false, bottomCode: true, bottomT: 0.4, place: 'centre', persp: true, perspDist: 80, verUp: 0, dome: 6, module: 1.5, trunk: 5, crown: 1, squash: 0.7, lobes: 4, puff: 0.85, rough: 1, ledge: '2', layout: 'one-piece', clear: 0.2, wood: 'brown', pink: 'rouge', light: 'blush', view: 'orbit', dist: 40, off: 0, lens: 'main', simLight: 'even', seedAdd: 0 };
   const $ = id => document.getElementById(id);
-  let T = null, renderer, scanRenderer, scene, group, hemi, dirLight, sim = null, orbitCam, topCam, phoneCam, model = null, needsRender = true;
+  let T = null, renderer, scanRenderer, scene, group, ground, hemi, dirLight, sim = null, orbitCam, topCam, phoneCam, model = null, needsRender = true;
   let blockMesh = null, blockMat = null;
   const orbit = { theta: 0.72, phi: 1.1, radius: 400, init: false };
   const S = () => state.module;
@@ -48,10 +48,12 @@
   bindRange('puff', 'puff', v => v.toFixed(2));
   bindRange('dome', 'dome', v => v + ' 格');
   bindRange('perspDist', 'perspDist', v => v + ' cm');
+  bindRange('bottomT', 'bottomT', v => v.toFixed(1) + ' mm');
   $('persp').addEventListener('change', e => { state.persp = e.target.checked; schedule(); });
   bindRange('mask', 'mask', v => v < 0 ? '自动' : '第 ' + v + ' 号');
   $('upper').addEventListener('change', e => { state.upper = e.target.checked; schedule(); });
   $('oncanopy').addEventListener('change', e => { state.onCanopy = e.target.checked; schedule(); });
+  $('bottomcode').addEventListener('change', e => { state.bottomCode = e.target.checked; schedule(); });
   bindRange('dist', 'dist', v => v + ' cm', false);
   bindRange('off', 'off', v => v + ' mm', false);
   bindRange('clear', 'clear', v => v.toFixed(2) + ' mm', false);
@@ -113,7 +115,7 @@
   const hexRGB = h => [1, 3, 5].map(i => parseInt(h.slice(i, i + 2), 16) / 255);
   const jit = (a, b, c) => { let h = (a * 374761393 + b * 668265263 + c * 1274126177) | 0; h = (h ^ (h >>> 13)) * 1274126177 | 0; return ((h ^ (h >>> 16)) >>> 0) / 4294967295 - 0.5; };
   // a little brightness noise per cube, so the blocks read as blocks
-  const shadeOf = cb => 1 + jit(cb.c, cb.r, cb.k) * (cb.kind === 'plate' ? 0 : cb.color === 'dark' ? 0.16 : 0.05);
+  const shadeOf = cb => 1 + jit(cb.c, cb.r, cb.k) * (cb.kind === 'plate' || cb.kind === 'under' ? 0 : cb.color === 'dark' ? 0.16 : 0.05);
   const FACES = [
     { n: [0, 1, 0], q: [[0, 1, 0], [1, 1, 0], [1, 1, 1], [0, 1, 1]] },   // top (+k)
     { n: [0, -1, 0], q: [[0, 0, 0], [0, 0, 1], [1, 0, 1], [1, 0, 0]] }, // bottom
@@ -125,13 +127,14 @@
   function buildBlocks(m) {
     const s = S(), N = m.N, off = -N * s / 2, pos = [], nor = [], col = [], tags = [], warp = m.warp || ((c, r, k) => [c, r, k]);
     const idx = (c, r, k) => (k * N + r) * N + c;
-    const filled = (c, r, k) => c >= 0 && r >= 0 && c < N && r < N && k >= 0 && (k === 0 || (k <= m.KMAX && m.vox[idx(c, r, k)] !== 0));
-    for (const cb of m.cubes) {
+    // level -1: the flat code under the plate (m.under), if any
+    const filled = (c, r, k) => c >= 0 && r >= 0 && c < N && r < N && (k === -1 ? !!m.under && c < m.P && r < m.P : k >= 0 && (k === 0 || (k <= m.KMAX && m.vox[idx(c, r, k)] !== 0)));
+    for (const cb of m.under ? m.cubes.concat(m.under) : m.cubes) {
       const sh = shadeOf(cb);
       const tagv = cb.color === 'dark' ? sh : cb.color === 'wood' ? 10 + sh : (cb.kind === 'plate' ? -1 : 20 + sh);
       for (const F of FACES) {
         if (filled(cb.c + F.n[0], cb.r + F.n[2], cb.k + F.n[1])) continue;
-        const quad = F.q.map(([x, y, z]) => { const w = warp(cb.c + x, cb.r + z, cb.k + y); return [off + w[0] * s, w[2] * s, off + w[1] * s]; });
+        const quad = F.q.map(([x, y, z]) => { const w = warp(cb.c + x, cb.r + z, cb.k + y); return [off + w[0] * s, w[2] < 0 ? w[2] * m.underT : w[2] * s, off + w[1] * s]; });
         for (const p of [quad[0], quad[1], quad[2], quad[0], quad[2], quad[3]]) { pos.push(p[0], p[1], p[2]); nor.push(F.n[0], F.n[1], F.n[2]); col.push(1, 1, 1); tags.push(tagv); }
       }
     }
@@ -183,7 +186,7 @@
     dirLight.position.set(-140, 320, -100); dirLight.castShadow = true;
     dirLight.shadow.mapSize.set(2048, 2048); dirLight.shadow.bias = -0.0008;
     scene.add(dirLight); scene.add(dirLight.target);
-    const ground = new T.Mesh(new T.PlaneGeometry(6000, 6000), new T.ShadowMaterial({ opacity: 0.12 }));
+    ground = new T.Mesh(new T.PlaneGeometry(6000, 6000), new T.ShadowMaterial({ opacity: 0.12 }));
     ground.rotation.x = -Math.PI / 2; ground.position.y = -0.05; ground.receiveShadow = true; scene.add(ground);
     blockMat = new T.MeshLambertMaterial({ vertexColors: true });
     // extra lights for the scan simulation only (see simLight)
@@ -205,6 +208,7 @@
   }
   const W = () => model.N * S();
   const H = () => (model.kTopMax + 1) * S();
+  const Hp = () => H() + (model.under ? model.underT : 0);   // as printed: with the flat code's layer under the plate
   const clampR = r => model ? Math.min(W() * 7, Math.max(W() * 1.1, r)) : r;
   function setupPointer() {
     const el = $('viewer'), pts = new Map(); let pinch0 = 0, r0 = 0;
@@ -456,7 +460,7 @@
     const used = [[PINKS[state.pink][0], PINKS[state.pink][1]], [LIGHTS[state.light][0], LIGHTS[state.light][1]]].concat(threeCol ? [['棕', COLORS.brown]] : []);
     const ledgeText = { 1: '全部 45° 台阶，免支撑', 2: '最多悬挑 2 格（' + (2 * s) + ' mm）', 3: '最多悬挑 3 格（' + (3 * s) + ' mm），需支撑' }[model.maxH];
     const cells = [
-      ['<span class="mono">' + W().toFixed(0) + ' × ' + W().toFixed(0) + ' × ' + H().toFixed(0) + '</span>', '成品尺寸 mm'],
+      ['<span class="mono">' + W().toFixed(0) + ' × ' + W().toFixed(0) + ' × ' + Hp().toFixed(0) + '</span>', '成品尺寸 mm'],
       ['<span class="palette">' + used.map(c => '<i style="background:' + c[1] + '" title="' + c[0] + '"></i>').join('') + '&nbsp;' + used.length + ' 色</span>', used.map(c => c[0]).join(' · ')],
       [model.onCanopy + ' / ' + (model.n * model.n), '码点落在树冠顶上 / 全部码点' + (model.onCanopy === model.n * model.n ? '' : '（其余印在底座上）')],
       [model.inShadow + ' 个', '台灯在左上方 60° 时，被树冠影子压暗的浅色码点（会被当成深色）'],
@@ -469,7 +473,7 @@
     const pegW = 2 * s - 2 * state.clear;
     $('moduleNote').textContent = (model.N > model.P ? '底座 ' + (model.P * s).toFixed(0) + ' mm 见方，树冠伸出底座，整体约 ' : '树宽约 ') + W().toFixed(0) + ' mm，树干 ' + (2 * s) + ' mm 粗' + (state.layout === 'split' ? '，榫头 ' + pegW.toFixed(1) + ' mm 见方' : '') + '。'
       + (s < 3 ? '方块小于 3 mm 时细节只有几条线宽，建议 0.2 mm 喷嘴或 0.12 mm 层高；手机也要离得更近，大约和方块边长成正比。' : '');
-    $('exportInfo').textContent = '当前模型 ' + W().toFixed(0) + ' × ' + W().toFixed(0) + ' × ' + H().toFixed(0) + ' mm，' + used.length + ' 个颜色部件。';
+    $('exportInfo').textContent = '当前模型 ' + W().toFixed(0) + ' × ' + W().toFixed(0) + ' × ' + Hp().toFixed(0) + ' mm，' + used.length + ' 个颜色部件。';
   }
   // Lamp positions the code should survive: around the recommended one (off the code's top-left corner, 45-60° up).
   const LAMP_SET = [[210, 45], [225, 45], [240, 45], [210, 60], [225, 60], [240, 60]];
@@ -526,6 +530,10 @@
     $('verInfo').textContent = '版本 ' + mi.version + ' · ' + mi.n + '×' + mi.n + ' · ' + mi.mode;
     $('maskVal').textContent = (state.mask < 0 ? '自动 · ' : '') + '第 ' + mi.mask + ' 号';
     model.warp = state.persp ? perspectiveWarp(model, S(), state.perspDist * 10) : null;
+    model.under = state.bottomCode ? bottomCode(model, mi.mat) : null;
+    model.underT = state.bottomT;
+    ground.position.y = -0.05 - (model.under ? model.underT : 0);   // the print stands on the flat code's layer
+    $('rowBottomT').hidden = !state.bottomCode;
     $('rowPerspDist').hidden = !state.persp;
     while (group.children.length) { const c = group.children[0]; group.remove(c); if (c.geometry) c.geometry.dispose(); }
     blockMesh = new T.Mesh(buildBlocks(model), blockMat); blockMesh.castShadow = true; blockMesh.receiveShadow = true;
@@ -559,8 +567,10 @@
   function exportParts() {
     return SakuraExport.buildParts(model, S(), exportColours(), state.wood === 'brown' ? null : { wood: 'light' }, { layout: state.layout, clear: state.clear, warp: model.warp });
   }
+  // no dots: a print service took "sakuraqr-mq.openkiri.zip.3mf" for a zip archive (the domain's .zip) and rejected
+  // the files inside it as unsupported formats
   function baseName() {
-    const host = (state.encoded || 'sakura').replace(/^[a-z][a-z0-9+.-]*:\/\//i, '').replace(/[^A-Za-z0-9._-]+/g, '-').replace(/^-+|-+$/g, '').toLowerCase();
+    const host = (state.encoded || 'sakura').replace(/^[a-z][a-z0-9+.-]*:\/\//i, '').replace(/[^A-Za-z0-9_-]+/g, '-').replace(/^-+|-+$/g, '').toLowerCase();
     return 'sakuraqr-' + (host || 'tree').slice(0, 40);
   }
   function download(name, data, type) {
@@ -573,25 +583,88 @@
   function busy(btn, fn) {
     if (!model) return;
     const label = btn.textContent; btn.disabled = true; btn.textContent = '正在生成…';
-    setTimeout(() => {
-      try { fn(); $('exportInfo').textContent = '已生成：' + lastExport; }
+    setTimeout(async () => {
+      try { await fn(); $('exportInfo').textContent = '已生成：' + lastExport; }
       catch (e) { $('exportInfo').textContent = '导出失败：' + e.message; }
       finally { btn.disabled = false; btn.textContent = label; }
     }, 30);
   }
   let lastExport = '';
-  $('dl3mf').addEventListener('click', e => busy(e.currentTarget, () => {
+
+  // ---------- design parameters: everything that decides the exported files, to grow the same tree again ----------
+  const DESIGN_KEYS = ['ecc', 'upper', 'mask', 'onCanopy', 'place', 'persp', 'perspDist', 'verUp', 'dome', 'module', 'trunk', 'crown', 'squash', 'lobes', 'puff', 'rough', 'ledge', 'wood', 'pink', 'light', 'seedAdd', 'layout', 'clear', 'bottomCode', 'bottomT'];
+  const designParams = () => ({ app: 'SakuraQR', text: $('txt').value.trim(), encoded: state.encoded, settings: Object.fromEntries(DESIGN_KEYS.map(k => [k, state[k]])) });
+  $('dldesign').addEventListener('click', e => busy(e.currentTarget, () => {
+    download(baseName() + '-design.json', JSON.stringify(designParams(), null, 2) + '\n', 'application/json');
+    lastExport = baseName() + '-design.json';
+  }));
+  // a design file from dldesign, or a GLB from dlglb (its root node's extras carry the text and the settings)
+  function readDesign(buf) {
+    const u8 = new Uint8Array(buf), dv = new DataView(buf);
+    if (u8.length > 20 && dv.getUint32(0, true) === 0x46546C67) {
+      const json = JSON.parse(new TextDecoder().decode(u8.subarray(20, 20 + dv.getUint32(12, true))));
+      const ex = json.nodes && json.nodes[0] && json.nodes[0].extras;
+      if (!ex || !ex.settings) throw new Error('这个 GLB 里没有设计参数（只有本页导出的 GLB 才有）');
+      return { text: ex.text, settings: ex.settings };
+    }
+    const d = JSON.parse(new TextDecoder().decode(u8));
+    if (!d || typeof d.text !== 'string' || !d.settings) throw new Error('不是本页下载的设计参数文件');
+    return d;
+  }
+  const SEGS = ['ecc', 'ledge', 'place', 'verUp', 'layout', 'wood'], CHECKS = { upper: 'upper', onCanopy: 'oncanopy', persp: 'persp', bottomCode: 'bottomcode' }, SWATCHES = { pink: ['pinks', PINKS], light: ['lights', LIGHTS] };
+  const RANGES = ['module', 'trunk', 'crown', 'squash', 'lobes', 'rough', 'puff', 'dome', 'perspDist', 'mask', 'clear', 'bottomT'];
+  // set every control as well as state; returns the settings a control could not take (out of a slider's range)
+  function applyDesign(d) {
+    const s = Object.assign({ bottomCode: false }, d.settings), off = [];   // designs from before the flat code had none
+    $('txt').value = d.text;
+    for (const k of DESIGN_KEYS) {
+      if (!(k in s)) continue;
+      const v = s[k];
+      if (SEGS.includes(k)) {
+        const b = [...$(k).querySelectorAll('button')].find(x => x.dataset.v === String(v));
+        if (!b) { off.push(k); continue; }
+        state[k] = b.dataset.v; $(k).querySelectorAll('button').forEach(x => x.setAttribute('aria-pressed', String(x === b)));
+      } else if (k in CHECKS) {
+        state[k] = !!v; $(CHECKS[k]).checked = !!v;
+      } else if (k in SWATCHES) {
+        const [wrap, table] = SWATCHES[k];
+        if (!(v in table)) { off.push(k); continue; }
+        state[k] = v; $(wrap).querySelectorAll('.sw').forEach(x => x.setAttribute('aria-pressed', String(x.id === wrap + '-' + v)));
+      } else if (RANGES.includes(k)) {
+        const el = $(k); el.value = v; el.dispatchEvent(new Event('input'));   // updates state and the label
+        if (state[k] !== +v) off.push(k);
+      } else state[k] = v;   // seedAdd
+    }
+    updateLayout();
+    schedule();
+    return off;
+  }
+  $('opendesign').addEventListener('click', () => $('designFile').click());
+  $('designFile').addEventListener('change', async e => {
+    const f = e.target.files[0]; e.target.value = '';
+    if (!f) return;
+    try {
+      const off = applyDesign(readDesign(await f.arrayBuffer()));
+      $('designInfo').textContent = '已导入 ' + f.name + '。' + (off.length ? '这几项超出了本页的范围，用的是最接近的值：' + off.join('、') + '。' : '');
+    } catch (err) { $('designInfo').textContent = '导入失败：' + err.message; }
+  });
+  $('dl3mf').addEventListener('click', e => busy(e.currentTarget, async () => {
     const parts = exportParts();
-    download(baseName() + '.3mf', SakuraExport.to3MF(parts, 'SakuraQR ' + state.encoded), 'model/3mf');
+    download(baseName() + '.3mf', await SakuraExport.to3MF(parts, 'SakuraQR ' + state.encoded), 'model/3mf');
     lastExport = baseName() + '.3mf（' + parts.map(p => p.name).join('、') + '）';
   }));
-  $('dlstl').addEventListener('click', e => busy(e.currentTarget, () => {
+  // full-colour resin: one object, a colour per face; the flat code (if on) is only colour on the plate's bottom
+  $('dl3mfc').addEventListener('click', e => busy(e.currentTarget, async () => {
+    const merge = state.wood === 'brown' ? null : { wood: 'light' };
+    download(baseName() + '-color.3mf', await SakuraExport.toFaceColour3MF(model, S(), exportColours(), merge, 'SakuraQR ' + state.encoded, { warp: model.warp }), 'model/3mf');
+    lastExport = baseName() + '-color.3mf（一个物体，按面上色' + (model.under ? '，底面码只上色、不加厚' : '') + '）';
+  }));
+  $('dlstl').addEventListener('click', e => busy(e.currentTarget, async () => {
     const parts = exportParts();
-    download(baseName() + '-stl.zip', SakuraExport.toSTLZip(parts, baseName()), 'application/zip');
+    download(baseName() + '-stl.zip', await SakuraExport.toSTLZip(parts, baseName()), 'application/zip');
     lastExport = baseName() + '-stl.zip（' + parts.length + ' 个 STL）';
   }));
   // the tree as printed, for animation (three.js, Blender): see SakuraExport.toGLB
-  const DESIGN_KEYS = ['ecc', 'upper', 'mask', 'onCanopy', 'place', 'persp', 'perspDist', 'verUp', 'dome', 'module', 'trunk', 'crown', 'squash', 'lobes', 'puff', 'rough', 'ledge', 'wood', 'pink', 'light', 'seedAdd'];
   $('dlglb').addEventListener('click', e => busy(e.currentTarget, () => {
     const merge = state.wood === 'brown' ? null : { wood: 'light' };
     const glb = SakuraExport.toGLB(model, S(), exportColours(), merge, {

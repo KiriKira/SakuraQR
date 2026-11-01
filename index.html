@@ -235,7 +235,7 @@ input[type=range] { width: 100%; accent-color: var(--accent); }
         <div class="two">
           <div class="row">
             <div class="rowhead"><span class="label">方块边长</span><span class="mono" id="moduleVal">1.5 mm</span></div>
-            <input type="range" id="module" min="1.5" max="6" step="0.5" value="1.5">
+            <input type="range" id="module" min="1" max="6" step="0.1" value="1.5">
             <p class="sub" id="moduleNote"></p>
           </div>
           <div class="row">
@@ -301,9 +301,20 @@ input[type=range] { width: 100%; accent-color: var(--accent); }
         <legend>导出</legend>
         <div class="exports">
           <button type="button" class="btn primary" id="dl3mf">下载 3MF（多色）</button>
+          <button type="button" class="btn" id="dl3mfc">下载 3MF（全彩树脂 · 按面上色）</button>
           <button type="button" class="btn" id="dlstl">下载 STL（按颜色分件 · zip）</button>
           <button type="button" class="btn" id="dlpng">下载俯视图 PNG</button>
           <button type="button" class="btn" id="dlglb">下载 GLB（动画 · three.js）</button>
+        </div>
+        <div class="row">
+          <span class="label">设计参数</span>
+          <div class="exports">
+            <button type="button" class="btn" id="dldesign">下载设计参数</button>
+            <button type="button" class="btn" id="opendesign">导入设计参数</button>
+            <input type="file" id="designFile" accept=".json,.glb,application/json,model/gltf-binary" hidden>
+          </div>
+          <p class="sub" id="designInfo"></p>
+          <p class="sub">网址和所有设置存成一个小文件，以后导入就能长出同一棵树。也可以直接导入本页导出的 GLB。</p>
         </div>
         <div class="row">
           <span class="label">打印方式</span>
@@ -313,12 +324,21 @@ input[type=range] { width: 100%; accent-color: var(--accent); }
           </div>
           <p class="sub" id="layoutNote"></p>
         </div>
+        <div class="row">
+          <label class="toggle"><input type="checkbox" id="bottomcode" checked> 底面加一个平面码（保底）</label>
+          <p class="sub">底座下面多垫薄薄一层，印同一个码，从下往上看是正的。平面码没有高低差和影子，顶上的码扫不出来时翻过来扫这一面。这一层只用来显示颜色，不用很厚。</p>
+        </div>
+        <div class="row" id="rowBottomT">
+          <div class="rowhead"><span class="label">底面码厚度</span><span class="mono" id="bottomTVal">0.4 mm</span></div>
+          <input type="range" id="bottomT" min="0.2" max="1.5" step="0.1" value="0.4">
+          <p class="sub">FDM 至少两层（0.2 mm 层高时 0.4 mm）。全彩树脂这类工艺颜色太薄会发浅，深浅对比不够时加厚一点。</p>
+        </div>
         <div class="row" id="rowClear" hidden>
           <div class="rowhead"><span class="label">插口间隙（每边）</span><span class="mono" id="clearVal">0.20 mm</span></div>
           <input type="range" id="clear" min="0.05" max="0.4" step="0.05" value="0.2">
         </div>
         <p class="sub" id="exportInfo"></p>
-        <p class="sub">3MF 里每种颜色是同一个物体的一个部件，导入 Bambu Studio 或 PrusaSlicer 后给每个部件指定耗材即可；坐标单位是毫米，底面在 z = 0。俯视图 PNG 可以先用手机扫一下，确认网址能正常打开。GLB 给做动画用，three.js、Blender 都能直接打开，单位是米，Y 轴朝上。</p>
+        <p class="sub">3MF 里每种颜色是同一个物体的一个部件，导入 Bambu Studio 或 PrusaSlicer 后给每个部件指定耗材即可；坐标单位是毫米，底面在 z = 0。全彩树脂这类按表面上色的工艺用“按面上色”的 3MF：整个模型是一个物体，颜色画在每个面上；底面码只是底座底面的颜色，不加厚，打印方式固定为正放 · 一体。俯视图 PNG 可以先用手机扫一下，确认网址能正常打开。GLB 给做动画用，three.js、Blender 都能直接打开，单位是米，Y 轴朝上。</p>
       </fieldset>
     </form>
   </div>
