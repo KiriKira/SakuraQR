@@ -216,7 +216,20 @@ function shadowedLight(m, sh, mat) {
   return k;
 }
 
+// A flat code under the plate, read from below: one more layer of cubes under the whole plate, the same pattern
+// mirrored left to right (turned over, the plate's columns run the other way), quiet zone light. No height steps,
+// no canopy, no shadows: the fallback when the 3D code on top does not scan. Cubes { c, r, color } at level -1.
+function bottomCode(m, mat) {
+  const out = [];
+  for (let r = 0; r < m.P; r++) for (let c = 0; c < m.P; c++) {
+    const i = r - m.q, j = m.n - 1 - (c - m.q);
+    const dark = i >= 0 && i < m.n && j >= 0 && j < m.n && mat[i][j];
+    out.push({ c, r, k: -1, color: dark ? 'dark' : 'light', kind: 'under' });
+  }
+  return out;
+}
+
 function canopyBoxes(m, s) {
   return m.cubes.map(cb => ({ x0: (cb.c - m.N / 2) * s, x1: (cb.c + 1 - m.N / 2) * s, y0: (cb.r - m.N / 2) * s, y1: (cb.r + 1 - m.N / 2) * s, z0: cb.k * s, z1: (cb.k + 1) * s, color: cb.color, kind: cb.kind }));
 }
-if (typeof module !== 'undefined') module.exports = { buildCanopyTree, canopyBoxes, strSeed, shadowedTops, shadowedLight, perspectiveWarp };
+if (typeof module !== 'undefined') module.exports = { buildCanopyTree, canopyBoxes, strSeed, shadowedTops, shadowedLight, perspectiveWarp, bottomCode };

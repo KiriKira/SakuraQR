@@ -86,10 +86,12 @@ const SakuraExport = (function () {
     const lift = place => (c, r, k) => { const p = place(c, r, k); return [p[0], p[1], p[2] + GROW / s]; };
     const parts = (cells, place, object, suffix) => keys.map(k => Object.assign({ key: k, object }, colours[k], suffix ? { name: colours[k].name + suffix } : null, shell(cells, ID[k], s, lift(place))))
       .filter(p => p.tris.length);
+    // model.under: the flat code under the plate (tree.js bottomCode), cubes at level -1
     if (opt.layout !== 'split') {
-      const cells = cellGrid(N, KMAX + 1);
-      for (const cb of model.cubes) cells.set(cb.c, cb.r, cb.k, id(cb.color));
-      return parts(cells, (c, r, k) => { const w = wp(c, r, k); return [w[0], N - w[1], k]; }, 'tree');
+      const lo = model.under ? 1 : 0, cells = cellGrid(N, KMAX + 1 + lo);
+      for (const cb of model.cubes) cells.set(cb.c, cb.r, cb.k + lo, id(cb.color));
+      if (model.under) for (const cb of model.under) cells.set(cb.c, cb.r, 0, id(cb.color));
+      return parts(cells, (c, r, k) => { const w = wp(c, r, k - lo); return [w[0], N - w[1], k]; }, 'tree');
     }
     const trunk = new Set(model.trunkCells.map(([c, r]) => c + ',' + r)), isTrunk = cb => trunk.has(cb.c + ',' + cb.r);
     const root = cb => cb.k === 1 && cb.kind === 'wood' && !isTrunk(cb);
@@ -102,12 +104,15 @@ const SakuraExport = (function () {
     const peg = box(c0 * s + opt.clear, r0 * s + opt.clear, T * s, (c0 + 2) * s - opt.clear, (r0 + 2) * s - opt.clear, T * s + 2 * s - 0.4);
     const pegColour = colours[(merge && merge.wood) || 'wood'];
     out.push(Object.assign({ key: 'peg', object: 'tree', name: pegColour.name + ' 榫头', hex: pegColour.hex }, peg));
-    // base, the right way up: an extra plate layer, the plate, the roots; the trunk's cells stay open as the socket
+    // base, the right way up: an extra plate layer, the plate, the roots; the trunk's cells stay open as the socket.
+    // With the flat code under the plate, the extra layer is that code and closes the socket's bottom (the socket is
+    // then the plate and the roots' level, still as deep as the peg is long).
     const base = cellGrid(N, 3), x0 = N + opt.gap / s;
     for (const cb of model.cubes) {
-      if (cb.k === 0 && !isTrunk(cb)) { base.set(cb.c, cb.r, 0, id('light')); base.set(cb.c, cb.r, 1, id(cb.color)); }
+      if (cb.k === 0 && !isTrunk(cb)) { if (!model.under) base.set(cb.c, cb.r, 0, id('light')); base.set(cb.c, cb.r, 1, id(cb.color)); }
       if (root(cb)) base.set(cb.c, cb.r, 2, id(cb.color));
     }
+    if (model.under) for (const cb of model.under) base.set(cb.c, cb.r, 0, id(cb.color));
     return out.concat(parts(base, (c, r, k) => { const w = wp(c, r, k - 1); return [x0 + w[0], N - w[1], k]; }, 'base', ' · ' + opt.baseName));
   }
 
@@ -232,15 +237,17 @@ const SakuraExport = (function () {
     const { N, P, n, q } = model, K = model.KMAX + 1, mm = s / 1000;
     const wp = opt.warp || ((c, r, k) => [c, r, k]);
     const key = name => (merge && merge[name]) || name;
-    const at = new Int32Array(N * N * K).fill(-1);
-    model.cubes.forEach((cb, i) => { at[(cb.k * N + cb.r) * N + cb.c] = i; });
-    const empty = (c, r, k) => c < 0 || r < 0 || k < 0 || c >= N || r >= N || k >= K || at[(k * N + r) * N + c] < 0;
+    // the flat code under the plate (model.under) is level -1: below y = 0, so the plate's bottom stays the origin
+    const lo = model.under ? 1 : 0, cubes = model.cubes.concat(model.under || []), KL = K + lo;
+    const at = new Int32Array(N * N * KL).fill(-1);
+    cubes.forEach((cb, i) => { at[((cb.k + lo) * N + cb.r) * N + cb.c] = i; });
+    const empty = (c, r, k) => { const kk = k + lo; return c < 0 || r < 0 || kk < 0 || c >= N || r >= N || kk >= KL || at[(kk * N + r) * N + c] < 0; };
     // a cell corner -> metres, the plate centred on the origin
     const pos = (c, r, k) => { const w = wp(c, r, k); return [(w[0] - P / 2) * mm, k * mm, (w[1] - P / 2) * mm]; };
-    const NODES = ['plate', 'trunk', 'canopy'], nodeOf = cb => cb.kind === 'plate' ? 'plate' : cb.kind === 'wood' ? 'trunk' : 'canopy';
+    const NODES = ['plate', 'trunk', 'canopy', 'bottom'], nodeOf = cb => cb.kind === 'plate' ? 'plate' : cb.kind === 'wood' ? 'trunk' : cb.kind === 'under' ? 'bottom' : 'canopy';
     const prims = new Map(), peak = {};   // node|colour -> { p, nrm, col, idx }; colour -> brightest shade
     const DIRS = [[1, 0, 0], [-1, 0, 0], [0, 1, 0], [0, -1, 0], [0, 0, 1], [0, 0, -1]];   // (dc, dr, dk)
-    for (const cb of model.cubes) {
+    for (const cb of cubes) {
       const colour = key(cb.color), id = nodeOf(cb) + '|' + colour, sh = opt.shade ? opt.shade(cb) : 1;
       if (!prims.has(id)) prims.set(id, { p: [], nrm: [], col: [], idx: [] });
       peak[colour] = Math.max(peak[colour] || 0, sh);
@@ -323,7 +330,9 @@ const SakuraExport = (function () {
       // top in cells (1 = bare plate, 0 = nothing there). The perspective warp moves high cells up to a few % inwards.
       grid: { cols: N, rows: N, origin: [cell(-P / 2), cell(-P / 2)], surface: Array.from({ length: N }, (_, r) => Array.from({ length: N }, (_, c) => topK[r * N + c] ? topK[r * N + c] + 1 : (r < P && c < P ? 1 : 0))) },
       colours: Object.fromEntries(colourKeys.map(k => [MAT_NAME[k], colours[k].hex])),
-      nodes: { plate: 'level 0, the base plate with the code', trunk: 'trunk, branches and roots', canopy: 'blossom cubes, painted tops included' }
+      // the flat code under the plate, read from below (y from -thickness to 0; the print stands on its bottom)
+      bottom: model.under ? { thickness: cell(1) } : null,
+      nodes: { plate: 'level 0, the base plate with the code', trunk: 'trunk, branches and roots', canopy: 'blossom cubes, painted tops included', bottom: 'the flat code under the plate, if any' }
     };
     json.nodes[0].extras = Object.assign({ sakuraqr: info }, opt.extras);
 

@@ -3,9 +3,9 @@
   const LIGHTS = { blush: ['浅粉', '#FAD6E2'], petal: ['花瓣粉', '#F7C6D6'], white: ['白', '#F5F2EF'] };
   const COLORS = { brown: '#6E4A34' };
   const FIXED = { maxLedge: 2 };
-  const state = { text: '', ecc: 'Q', upper: true, mask: -1, onCanopy: false, place: 'centre', persp: true, perspDist: 80, verUp: 0, dome: 6, module: 1.5, trunk: 5, crown: 1, squash: 0.7, lobes: 4, puff: 0.85, rough: 1, ledge: '2', layout: 'one-piece', clear: 0.2, wood: 'brown', pink: 'rouge', light: 'blush', view: 'orbit', dist: 40, off: 0, lens: 'main', simLight: 'even', seedAdd: 0 };
+  const state = { text: '', ecc: 'Q', upper: true, mask: -1, onCanopy: false, bottomCode: true, place: 'centre', persp: true, perspDist: 80, verUp: 0, dome: 6, module: 1.5, trunk: 5, crown: 1, squash: 0.7, lobes: 4, puff: 0.85, rough: 1, ledge: '2', layout: 'one-piece', clear: 0.2, wood: 'brown', pink: 'rouge', light: 'blush', view: 'orbit', dist: 40, off: 0, lens: 'main', simLight: 'even', seedAdd: 0 };
   const $ = id => document.getElementById(id);
-  let T = null, renderer, scanRenderer, scene, group, hemi, dirLight, sim = null, orbitCam, topCam, phoneCam, model = null, needsRender = true;
+  let T = null, renderer, scanRenderer, scene, group, ground, hemi, dirLight, sim = null, orbitCam, topCam, phoneCam, model = null, needsRender = true;
   let blockMesh = null, blockMat = null;
   const orbit = { theta: 0.72, phi: 1.1, radius: 400, init: false };
   const S = () => state.module;
@@ -52,6 +52,7 @@
   bindRange('mask', 'mask', v => v < 0 ? '自动' : '第 ' + v + ' 号');
   $('upper').addEventListener('change', e => { state.upper = e.target.checked; schedule(); });
   $('oncanopy').addEventListener('change', e => { state.onCanopy = e.target.checked; schedule(); });
+  $('bottomcode').addEventListener('change', e => { state.bottomCode = e.target.checked; schedule(); });
   bindRange('dist', 'dist', v => v + ' cm', false);
   bindRange('off', 'off', v => v + ' mm', false);
   bindRange('clear', 'clear', v => v.toFixed(2) + ' mm', false);
@@ -113,7 +114,7 @@
   const hexRGB = h => [1, 3, 5].map(i => parseInt(h.slice(i, i + 2), 16) / 255);
   const jit = (a, b, c) => { let h = (a * 374761393 + b * 668265263 + c * 1274126177) | 0; h = (h ^ (h >>> 13)) * 1274126177 | 0; return ((h ^ (h >>> 16)) >>> 0) / 4294967295 - 0.5; };
   // a little brightness noise per cube, so the blocks read as blocks
-  const shadeOf = cb => 1 + jit(cb.c, cb.r, cb.k) * (cb.kind === 'plate' ? 0 : cb.color === 'dark' ? 0.16 : 0.05);
+  const shadeOf = cb => 1 + jit(cb.c, cb.r, cb.k) * (cb.kind === 'plate' || cb.kind === 'under' ? 0 : cb.color === 'dark' ? 0.16 : 0.05);
   const FACES = [
     { n: [0, 1, 0], q: [[0, 1, 0], [1, 1, 0], [1, 1, 1], [0, 1, 1]] },   // top (+k)
     { n: [0, -1, 0], q: [[0, 0, 0], [0, 0, 1], [1, 0, 1], [1, 0, 0]] }, // bottom
@@ -125,8 +126,9 @@
   function buildBlocks(m) {
     const s = S(), N = m.N, off = -N * s / 2, pos = [], nor = [], col = [], tags = [], warp = m.warp || ((c, r, k) => [c, r, k]);
     const idx = (c, r, k) => (k * N + r) * N + c;
-    const filled = (c, r, k) => c >= 0 && r >= 0 && c < N && r < N && k >= 0 && (k === 0 || (k <= m.KMAX && m.vox[idx(c, r, k)] !== 0));
-    for (const cb of m.cubes) {
+    // level -1: the flat code under the plate (m.under), if any
+    const filled = (c, r, k) => c >= 0 && r >= 0 && c < N && r < N && (k === -1 ? !!m.under && c < m.P && r < m.P : k >= 0 && (k === 0 || (k <= m.KMAX && m.vox[idx(c, r, k)] !== 0)));
+    for (const cb of m.under ? m.cubes.concat(m.under) : m.cubes) {
       const sh = shadeOf(cb);
       const tagv = cb.color === 'dark' ? sh : cb.color === 'wood' ? 10 + sh : (cb.kind === 'plate' ? -1 : 20 + sh);
       for (const F of FACES) {
@@ -183,7 +185,7 @@
     dirLight.position.set(-140, 320, -100); dirLight.castShadow = true;
     dirLight.shadow.mapSize.set(2048, 2048); dirLight.shadow.bias = -0.0008;
     scene.add(dirLight); scene.add(dirLight.target);
-    const ground = new T.Mesh(new T.PlaneGeometry(6000, 6000), new T.ShadowMaterial({ opacity: 0.12 }));
+    ground = new T.Mesh(new T.PlaneGeometry(6000, 6000), new T.ShadowMaterial({ opacity: 0.12 }));
     ground.rotation.x = -Math.PI / 2; ground.position.y = -0.05; ground.receiveShadow = true; scene.add(ground);
     blockMat = new T.MeshLambertMaterial({ vertexColors: true });
     // extra lights for the scan simulation only (see simLight)
@@ -205,6 +207,7 @@
   }
   const W = () => model.N * S();
   const H = () => (model.kTopMax + 1) * S();
+  const Hp = () => H() + (model.under ? S() : 0);   // as printed: with the flat code's layer under the plate
   const clampR = r => model ? Math.min(W() * 7, Math.max(W() * 1.1, r)) : r;
   function setupPointer() {
     const el = $('viewer'), pts = new Map(); let pinch0 = 0, r0 = 0;
@@ -456,7 +459,7 @@
     const used = [[PINKS[state.pink][0], PINKS[state.pink][1]], [LIGHTS[state.light][0], LIGHTS[state.light][1]]].concat(threeCol ? [['棕', COLORS.brown]] : []);
     const ledgeText = { 1: '全部 45° 台阶，免支撑', 2: '最多悬挑 2 格（' + (2 * s) + ' mm）', 3: '最多悬挑 3 格（' + (3 * s) + ' mm），需支撑' }[model.maxH];
     const cells = [
-      ['<span class="mono">' + W().toFixed(0) + ' × ' + W().toFixed(0) + ' × ' + H().toFixed(0) + '</span>', '成品尺寸 mm'],
+      ['<span class="mono">' + W().toFixed(0) + ' × ' + W().toFixed(0) + ' × ' + Hp().toFixed(0) + '</span>', '成品尺寸 mm'],
       ['<span class="palette">' + used.map(c => '<i style="background:' + c[1] + '" title="' + c[0] + '"></i>').join('') + '&nbsp;' + used.length + ' 色</span>', used.map(c => c[0]).join(' · ')],
       [model.onCanopy + ' / ' + (model.n * model.n), '码点落在树冠顶上 / 全部码点' + (model.onCanopy === model.n * model.n ? '' : '（其余印在底座上）')],
       [model.inShadow + ' 个', '台灯在左上方 60° 时，被树冠影子压暗的浅色码点（会被当成深色）'],
@@ -469,7 +472,7 @@
     const pegW = 2 * s - 2 * state.clear;
     $('moduleNote').textContent = (model.N > model.P ? '底座 ' + (model.P * s).toFixed(0) + ' mm 见方，树冠伸出底座，整体约 ' : '树宽约 ') + W().toFixed(0) + ' mm，树干 ' + (2 * s) + ' mm 粗' + (state.layout === 'split' ? '，榫头 ' + pegW.toFixed(1) + ' mm 见方' : '') + '。'
       + (s < 3 ? '方块小于 3 mm 时细节只有几条线宽，建议 0.2 mm 喷嘴或 0.12 mm 层高；手机也要离得更近，大约和方块边长成正比。' : '');
-    $('exportInfo').textContent = '当前模型 ' + W().toFixed(0) + ' × ' + W().toFixed(0) + ' × ' + H().toFixed(0) + ' mm，' + used.length + ' 个颜色部件。';
+    $('exportInfo').textContent = '当前模型 ' + W().toFixed(0) + ' × ' + W().toFixed(0) + ' × ' + Hp().toFixed(0) + ' mm，' + used.length + ' 个颜色部件。';
   }
   // Lamp positions the code should survive: around the recommended one (off the code's top-left corner, 45-60° up).
   const LAMP_SET = [[210, 45], [225, 45], [240, 45], [210, 60], [225, 60], [240, 60]];
@@ -526,6 +529,8 @@
     $('verInfo').textContent = '版本 ' + mi.version + ' · ' + mi.n + '×' + mi.n + ' · ' + mi.mode;
     $('maskVal').textContent = (state.mask < 0 ? '自动 · ' : '') + '第 ' + mi.mask + ' 号';
     model.warp = state.persp ? perspectiveWarp(model, S(), state.perspDist * 10) : null;
+    model.under = state.bottomCode ? bottomCode(model, mi.mat) : null;
+    ground.position.y = -0.05 - (model.under ? S() : 0);   // the print stands on the flat code's layer
     $('rowPerspDist').hidden = !state.persp;
     while (group.children.length) { const c = group.children[0]; group.remove(c); if (c.geometry) c.geometry.dispose(); }
     blockMesh = new T.Mesh(buildBlocks(model), blockMat); blockMesh.castShadow = true; blockMesh.receiveShadow = true;
@@ -584,7 +589,7 @@
   let lastExport = '';
 
   // ---------- design parameters: everything that decides the exported files, to grow the same tree again ----------
-  const DESIGN_KEYS = ['ecc', 'upper', 'mask', 'onCanopy', 'place', 'persp', 'perspDist', 'verUp', 'dome', 'module', 'trunk', 'crown', 'squash', 'lobes', 'puff', 'rough', 'ledge', 'wood', 'pink', 'light', 'seedAdd', 'layout', 'clear'];
+  const DESIGN_KEYS = ['ecc', 'upper', 'mask', 'onCanopy', 'place', 'persp', 'perspDist', 'verUp', 'dome', 'module', 'trunk', 'crown', 'squash', 'lobes', 'puff', 'rough', 'ledge', 'wood', 'pink', 'light', 'seedAdd', 'layout', 'clear', 'bottomCode'];
   const designParams = () => ({ app: 'SakuraQR', text: $('txt').value.trim(), encoded: state.encoded, settings: Object.fromEntries(DESIGN_KEYS.map(k => [k, state[k]])) });
   $('dldesign').addEventListener('click', e => busy(e.currentTarget, () => {
     download(baseName() + '-design.json', JSON.stringify(designParams(), null, 2) + '\n', 'application/json');
@@ -603,11 +608,11 @@
     if (!d || typeof d.text !== 'string' || !d.settings) throw new Error('不是本页下载的设计参数文件');
     return d;
   }
-  const SEGS = ['ecc', 'ledge', 'place', 'verUp', 'layout', 'wood'], CHECKS = { upper: 'upper', onCanopy: 'oncanopy', persp: 'persp' }, SWATCHES = { pink: ['pinks', PINKS], light: ['lights', LIGHTS] };
+  const SEGS = ['ecc', 'ledge', 'place', 'verUp', 'layout', 'wood'], CHECKS = { upper: 'upper', onCanopy: 'oncanopy', persp: 'persp', bottomCode: 'bottomcode' }, SWATCHES = { pink: ['pinks', PINKS], light: ['lights', LIGHTS] };
   const RANGES = ['module', 'trunk', 'crown', 'squash', 'lobes', 'rough', 'puff', 'dome', 'perspDist', 'mask', 'clear'];
   // set every control as well as state; returns the settings a control could not take (out of a slider's range)
   function applyDesign(d) {
-    const s = d.settings, off = [];
+    const s = Object.assign({ bottomCode: false }, d.settings), off = [];   // designs from before the flat code had none
     $('txt').value = d.text;
     for (const k of DESIGN_KEYS) {
       if (!(k in s)) continue;

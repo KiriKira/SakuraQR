@@ -2,10 +2,11 @@
 // Encodes a URL, grows the tree, exports 3MF + STL zip in both layouts (one piece; tree upside down + separate base),
 // checks every part is a closed 2-manifold (every edge on exactly two faces, one fan round every vertex, also after
 // welding vertices by position as STL readers do) and the peg fits the socket, checks how the 3MF is packed (model
-// first, deflated) and the GLB for animation, and writes the top view as a PPM image so a decoder can confirm it scans.
+// first, deflated), the flat code under the plate and the GLB for animation, and writes the top view and the bottom
+// view as PPM images so a decoder can confirm they scan.
 const fs = require('fs'), path = require('path');
 const QR = require('../js/qr.js');
-const { buildCanopyTree, shadowedTops, shadowedLight, perspectiveWarp } = require('../js/tree.js');
+const { buildCanopyTree, shadowedTops, shadowedLight, perspectiveWarp, bottomCode } = require('../js/tree.js');
 const SakuraExport = require('../js/export.js');
 
 const out = process.argv[2] || path.join(__dirname, 'out');
@@ -106,7 +107,8 @@ for (const [onCanopy, s, shift] of [[true, 4, 0], [false, 4, 0], [false, 1.5, 0]
 
 // GLB for animation: a valid container, every accessor in range, faces wound the way their normals point, and all
 // primitives together a closed surface (welded by position); with the perspective warp, and with the canopy past the plate
-for (const [label, m, s, warp] of [['canopy, 4 mm', model, 4, null], ['plate, 1.5 mm, warped', plateTree(0), 1.5, true], ['corner, 1.5 mm, warped', plateTree(CORNER), 1.5, true]]) {
+const withBottom = m => Object.assign({}, m, { under: bottomCode(m, qr.matrix) });
+for (const [label, m, s, warp] of [['canopy, 4 mm', model, 4, null], ['plate, 1.5 mm, warped', plateTree(0), 1.5, true], ['corner, 1.5 mm, warped', plateTree(CORNER), 1.5, true], ['flat code under the plate, 1.5 mm, warped', withBottom(plateTree(0)), 1.5, true]]) {
   const glb = SakuraExport.toGLB(m, s, colours, null, { warp: warp ? perspectiveWarp(m, s, 800) : null, shade: cb => 1 + ((cb.c + cb.r + cb.k) % 3 - 1) * 0.08 });
   fs.writeFileSync(path.join(out, 'sakura-' + label.replace(/[^a-z0-9.]+/g, '-') + '.glb'), glb);
   const dv = new DataView(glb.buffer, glb.byteOffset, glb.byteLength);
@@ -140,7 +142,30 @@ for (const [label, m, s, warp] of [['canopy, 4 mm', model, 4, null], ['plate, 1.
   console.log('GLB, ' + label + ':', (glb.length / 1024).toFixed(0), 'KB,', json.meshes.map(x => x.name).join('/') + ',', au.triangles, 'triangles, open edges', au.open, ', mis-wound', misWound, '; bbox', box.map(x => (x * 1000).toFixed(1)).join(' '), 'mm');
   if (au.open || misWound) fail('GLB surface not closed or wound inwards (' + label + ')');
   // the plate's bottom on y = 0, centred (the perspective warp widens it by a fraction of a percent, as in the print)
-  if (Math.abs(box[1]) > 1e-7 || Math.abs(box[0] / (-m.P * s / 2000) - 1) > 0.005 || info.plate.cells !== m.P || info.grid.surface.length !== m.N) fail('GLB placement or info (' + label + ')');
+  if (Math.abs(box[1] + (m.under ? s / 1000 : 0)) > 1e-7 || !!info.bottom !== !!m.under || Math.abs(box[0] / (-m.P * s / 2000) - 1) > 0.005 || info.plate.cells !== m.P || info.grid.surface.length !== m.N) fail('GLB placement or info (' + label + ')');
+}
+
+// the flat code under the plate: the code mirrored left to right, so that turned over it reads the right way round;
+// in both layouts every part stays a closed 2-manifold, the base gets a closed bottom and the peg still fits the socket
+{
+  const m = withBottom(plateTree(0)), P = m.P;
+  for (let r = 0; r < m.n; r++) for (let c = 0; c < m.n; c++) {
+    const cb = m.under[(r + m.q) * P + (m.q + m.n - 1 - c)];
+    if ((cb.color === 'dark') !== !!qr.matrix[r][c]) { fail('flat code under the plate is not the mirrored code'); r = m.n; break; }
+  }
+  if (m.under.length !== P * P || m.under.some(cb => (cb.c < m.q || cb.r < m.q || cb.c >= m.q + m.n || cb.r >= m.q + m.n) && cb.color !== 'light')) fail('flat code: plate not covered or quiet zone not light');
+  for (const layout of ['one-piece', 'split']) {
+    const parts = SakuraExport.buildParts(m, 1.5, colours, null, { layout, warp: perspectiveWarp(m, 1.5, 800) });
+    const bad = parts.filter(p => { const a = SakuraExport.audit(p); return a.open || a.nonManifold || a.badVerts; });
+    const zmin = Math.min(...parts.flatMap(p => p.verts.filter((_, i) => i % 3 === 2)));
+    console.log('flat code under the plate, ' + layout + ':', parts.map(p => p.object + '/' + p.key).join(' '), bad.length ? 'NOT closed: ' + bad.map(p => p.key) : 'all closed', ', lowest z', zmin.toFixed(3));
+    if (bad.length) fail('flat code: ' + layout + ' parts not closed');
+    if (Math.abs(zmin) > 1e-9) fail('flat code: ' + layout + ' not on the bed');
+  }
+  // seen from below, as PPM (turned over left to right: column c shows at P - 1 - c)
+  const px = 12, W = (P + 4) * px, img = Buffer.alloc(W * W * 3, 255), rgb = { dark: [217, 82, 127], light: [250, 214, 226] };
+  for (const cb of m.under) for (let y = 0; y < px; y++) for (let x = 0; x < px; x++) img.set(rgb[cb.color], (((cb.r + 2) * px + y) * W + (P - 1 - cb.c + 2) * px + x) * 3);
+  fs.writeFileSync(path.join(out, 'bottomview.ppm'), Buffer.concat([Buffer.from(`P6 ${W} ${W} 255\n`), img]));
 }
 
 // top view (one pixel block per module) as PPM
